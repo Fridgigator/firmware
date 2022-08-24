@@ -15,7 +15,7 @@ class WiFiStorage {
 public:
     WiFiStorage(string SSID, uint8_t *BSSID, int32_t Channel, bool isEncrypted) noexcept;
 
-    friend int send(const vector<WiFiStorage> &data, NimBLECharacteristic *pRead, NimBLECharacteristic *pWrite);
+    friend class SendWifiDataClass;
 };
 
 

@@ -1,7 +1,8 @@
-/build
+build
 debug/
 target/
 **/*.rs.bk
 .vscode
 .pio
+generated
 
