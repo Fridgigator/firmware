@@ -7,5 +7,4 @@ class InterruptedException : std::exception {
 
 };
 
-
 #endif //ESP32_INTERRUPTEDEXCEPTION_H

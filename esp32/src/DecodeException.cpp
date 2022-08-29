@@ -1,5 +1,5 @@
 #include "DecodeException.h"
 
 const char *DecodeException::what() {
-    return "wrong char after 1";
+  return "wrong char after 1";
 }

@@ -7,9 +7,8 @@
 using namespace std;
 
 class DecodeException : public exception {
-public:
-    const char *what();
+ public:
+  const char *what();
 };
-
 
 #endif //ESP32_DECODEEXCEPTION_H

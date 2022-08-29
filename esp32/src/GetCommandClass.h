@@ -10,14 +10,13 @@
 using namespace std;
 
 class GetCommandClass {
-    deque<uint8_t> data;
-    uint32_t totalLengthOfData;
-public:
-    explicit GetCommandClass(uint32_t size);
+  deque<uint8_t> data;
+  uint32_t totalLengthOfData;
+ public:
+  explicit GetCommandClass(uint32_t size);
 
-    [[nodiscard]]
-    optional<vector<uint8_t>> read(deque<uint8_t> &ch);
+  [[nodiscard]]
+  optional<vector<uint8_t>> read(deque<uint8_t> &ch);
 };
-
 
 #endif //ESP32_GETCOMMANDCLASS_H

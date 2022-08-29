@@ -9,5 +9,4 @@ class StateException : exception {
 
 };
 
-
 #endif //ESP32_STATEEXCEPTION_H
