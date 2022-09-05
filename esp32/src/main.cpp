@@ -7,9 +7,12 @@
 #include <queue>
 #include <mutex>
 #include <cstring>
+#include <iostream>
+#include <Preferences.h>
+
 #include "StateException.h"
 #include "State.h"
-#include <iostream>
+#include "uuid.h"
 
 using namespace std;
 
@@ -52,9 +55,7 @@ class CharacteristicCallback : public NimBLECharacteristicCallbacks {
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer) override {
     mtxState.lock();
-    if (s != nullptr) {
-      delete s;
-    }
+    delete s;
     s = new State();
     mtxState.unlock();
 
@@ -72,14 +73,25 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 vector<uint8_t> getData(NimBLECharacteristic *pRead, NimBLECharacteristic *pWrite);
 
 CharacteristicCallback *c_callback;
-
 void setup() {
+  WiFiClass::mode(WIFI_STA);
 
   Serial.begin(115200);
+
   Serial.println("Starting BLE work!");
   c_callback = new CharacteristicCallback();
   NimBLEDevice::init("ESP32");
-
+  Preferences preferences;
+  preferences.begin("permanent", false);
+  string uuid = preferences.getString("uuid").c_str();
+  if(preferences.isKey("uuid")) {
+    char returnUUID[37];
+    UUIDGen(returnUUID);
+    preferences.putString("uuid", returnUUID);
+    uuid = preferences.getString("uuid").c_str();
+  }
+  cout<<"uuid="<<uuid<<endl;
+  preferences.end();
   NimBLEServer *pServer = BLEDevice::createServer();
   NimBLEService *pService = pServer->createService(SERVICE_UUID);
   pRead = pService->createCharacteristic(CHARACTERISTIC_UUID,
@@ -98,11 +110,29 @@ void setup() {
   auto *pServerCallbacks = new ServerCallbacks();
   pServer->setCallbacks(pServerCallbacks);
 
-  WiFiClass::mode(WIFI_STA);
   WiFi.disconnect();
   WiFi.setAutoReconnect(true);
   delay(100);
 }
 
 void loop() {
+  if (WiFi.isConnected()) {
+    cout << "Is connected" << endl;
+  } else {
+    Preferences preferences;
+    preferences.begin(WIFI_DATA_KEY,true);
+    if (preferences.isKey(WIFI_DATA_KEY_SSID) && preferences.isKey(WIFI_DATA_KEY_PASSWORD)) {
+
+      WiFi.begin(preferences.getString(WIFI_DATA_KEY_SSID).c_str(), preferences.getString(WIFI_DATA_KEY_PASSWORD).c_str());
+      preferences.end();
+
+      while (!WiFi.isConnected()) {
+        delay(1000);
+        cout << "Trying to connect" << endl;
+      }
+      return;
+    }
+    cout << "Is not connected and cannot connect" << endl;
+  }
+  delay(100);
 }

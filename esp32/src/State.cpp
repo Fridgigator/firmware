@@ -8,9 +8,11 @@
 #include <WiFi.h>
 #include <thread>
 #include <mutex>
+#include <Preferences.h>
 #include "WiFiState.h"
 #include "GetWiFiStateSizeClass.h"
 #include "spm_headers/nanopb/pb_encode.h"
+#include "Constants.h"
 
 using namespace std;
 
@@ -89,17 +91,27 @@ void State::push(const NimBLEAttValue &ch) {
               mtxWifi.lock();
               wifiState = CONNECTING;
               mtxWifi.unlock();
-              std::thread t([]() {
+              std::thread t([wifiConnectInfo]() {
                 for (int i = 0; i < 5; i++) {
                   if (WiFi.isConnected()) {
 
                     mtxWifi.lock();
                     wifiState = CONNECTED;
                     mtxWifi.unlock();
+                    cout<<"Registering"<<endl;
+                    Preferences preferences;
+                    preferences.begin(WIFI_DATA_KEY);
+                    preferences.putString(WIFI_DATA_KEY_PASSWORD, wifiConnectInfo.password);
+                    preferences.putString(WIFI_DATA_KEY_SSID, wifiConnectInfo.ssid);
+
+
+                    preferences.end();
+                    cout<<"Ended Registering"<<endl;
                     return;
                   }
                   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                 }
+                cout<<"Timeout"<<endl;
                 mtxWifi.lock();
                 wifiState = TIMEOUT;
                 mtxWifi.unlock();
