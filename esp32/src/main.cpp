@@ -7,8 +7,8 @@
 #include <queue>
 #include <mutex>
 #include <cstring>
-#include <iostream>
 #include <Preferences.h>
+#include <HTTPClient.h>
 
 #include "StateException.h"
 #include "State.h"
@@ -18,6 +18,9 @@ using namespace std;
 
 NimBLECharacteristic *pRead = nullptr;
 mutex mtxState;
+
+mutex mtxRegisterToken;
+string registerToken;
 
 bool isConnected;
 State *s;
@@ -31,7 +34,7 @@ class CharacteristicCallback : public NimBLECharacteristicCallbacks {
       s->push(val);
       mtxState.unlock();
     } else {
-      cerr << "nullptr get" << endl;
+      Serial.println("nullptr get");
       throw StateException();
 
     }
@@ -45,7 +48,7 @@ class CharacteristicCallback : public NimBLECharacteristicCallbacks {
       ch->indicate();
       mtxState.unlock();
     } else {
-      cerr << "nullptr set" << endl;
+      Serial.println("nullptr set");
       throw StateException();
     }
 
@@ -84,13 +87,14 @@ void setup() {
   Preferences preferences;
   preferences.begin("permanent", false);
   string uuid = preferences.getString("uuid").c_str();
-  if(preferences.isKey("uuid")) {
+  if(!preferences.isKey("uuid")) {
     char returnUUID[37];
     UUIDGen(returnUUID);
     preferences.putString("uuid", returnUUID);
     uuid = preferences.getString("uuid").c_str();
   }
-  cout<<"uuid="<<uuid<<endl;
+  Serial.println("uuid=");
+  Serial.println(uuid.c_str());
   preferences.end();
   NimBLEServer *pServer = BLEDevice::createServer();
   NimBLEService *pService = pServer->createService(SERVICE_UUID);
@@ -114,10 +118,39 @@ void setup() {
   WiFi.setAutoReconnect(true);
   delay(100);
 }
-
+bool timeSet = false;
+void setClock();
 void loop() {
   if (WiFi.isConnected()) {
-    cout << "Is connected" << endl;
+    Serial.println("Is connected");
+    if(!timeSet) {
+      setClock();
+      timeSet = true;
+    }
+    mtxRegisterToken.lock();
+    auto _registerToken = registerToken;
+    registerToken = "";
+    mtxRegisterToken.unlock();
+    if(!_registerToken.empty()) {
+      HTTPClient http_client;
+      Preferences preferences;
+      preferences.begin("permanent", false);
+      auto uuid = string(preferences.getString("uuid").c_str());
+      string url = string("https://fridgigator.herokuapp.com/api/register-hub?hub-name=")+uuid;
+      http_client.begin(url.c_str(), rootCACertificate);
+      http_client.addHeader("Authorization", _registerToken.c_str());
+      Serial.println("main - About to get");
+      Serial.println(ESP.getFreeHeap());
+      int httpCode = http_client.GET();
+      Serial.println(" main -  Got");
+      Serial.println(std::to_string(httpCode).c_str());
+      if (httpCode < 0) {
+        Serial.print(" main -  get failed: ");
+        Serial.println(HTTPClient::errorToString(httpCode));
+
+      }
+    }
+
   } else {
     Preferences preferences;
     preferences.begin(WIFI_DATA_KEY,true);
@@ -128,11 +161,30 @@ void loop() {
 
       while (!WiFi.isConnected()) {
         delay(1000);
-        cout << "Trying to connect" << endl;
+        Serial.println("Trying to connect");
       }
       return;
     }
-    cout << "Is not connected and cannot connect" << endl;
+    Serial.println("Is not connected and cannot connect");
   }
-  delay(100);
+  Serial.println(ESP.getFreeHeap());
+  delay(1000);
+}
+void setClock() {
+  configTime(0, 0, "pool.ntp.org");
+
+  Serial.print(F("Waiting for NTP time sync: "));
+  time_t nowSecs = time(nullptr);
+  while (nowSecs < 8 * 3600 * 2) {
+    delay(500);
+    Serial.print(F("."));
+    yield();
+    nowSecs = time(nullptr);
+  }
+
+  Serial.println();
+  struct tm timeinfo{};
+  gmtime_r(&nowSecs, &timeinfo);
+  Serial.print(F("Current time: "));
+  Serial.print(asctime(&timeinfo));
 }

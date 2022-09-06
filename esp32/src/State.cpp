@@ -3,16 +3,17 @@
 #include "pb_decode.h"
 #include "DecodeException.h"
 #include "StateException.h"
-#include <iostream>
 #include <memory>
 #include <WiFi.h>
 #include <thread>
 #include <mutex>
 #include <Preferences.h>
+#include <HTTPClient.h>
 #include "WiFiState.h"
 #include "GetWiFiStateSizeClass.h"
 #include "spm_headers/nanopb/pb_encode.h"
 #include "Constants.h"
+#include "ConnectionException.h"
 
 using namespace std;
 
@@ -59,13 +60,14 @@ void State::push(const NimBLEAttValue &ch) {
           // Packet is huge and takes up too much stack space;
           auto message = make_unique<BLESendPacket>();
           *message = BLESendPacket_init_zero;
-
+          printVec(result.value());
           pb_istream_t stream = pb_istream_from_buffer(result.value().data(), result.value().size());
 
           bool status = pb_decode(&stream, BLESendPacket_fields, message.get());
 
           if (!status) {
-            cerr << "Decoding failed (get command):" << PB_GET_ERROR(&stream) << endl;
+            Serial.print("Decoding failed (get command):");
+            Serial.println( PB_GET_ERROR(&stream));
             throw DecodeException();
           }
           switch (message->which_type) {
@@ -84,34 +86,32 @@ void State::push(const NimBLEAttValue &ch) {
               break;
             }
             case BLESendPacket_wifiConnectInfo_tag: {
-              WiFiConnectInfo wifiConnectInfo = message->type.wifiConnectInfo;
+              auto wifiConnectInfo = make_unique<WiFiConnectInfo>(message->type.wifiConnectInfo);
               WiFiClass::mode(WIFI_STA);
-              WiFi.begin(wifiConnectInfo.ssid, wifiConnectInfo.password);
+              WiFi.begin(wifiConnectInfo->ssid, wifiConnectInfo->password);
               Serial.print("Connecting to WiFi ..\n");
               mtxWifi.lock();
               wifiState = CONNECTING;
               mtxWifi.unlock();
-              std::thread t([wifiConnectInfo]() {
+              std::thread t([wifiConnectInfo = move(wifiConnectInfo)]() {
                 for (int i = 0; i < 5; i++) {
                   if (WiFi.isConnected()) {
 
                     mtxWifi.lock();
                     wifiState = CONNECTED;
                     mtxWifi.unlock();
-                    cout<<"Registering"<<endl;
                     Preferences preferences;
                     preferences.begin(WIFI_DATA_KEY);
-                    preferences.putString(WIFI_DATA_KEY_PASSWORD, wifiConnectInfo.password);
-                    preferences.putString(WIFI_DATA_KEY_SSID, wifiConnectInfo.ssid);
+                    preferences.putString(WIFI_DATA_KEY_PASSWORD, wifiConnectInfo->password);
+                    preferences.putString(WIFI_DATA_KEY_SSID, wifiConnectInfo->ssid);
 
 
                     preferences.end();
-                    cout<<"Ended Registering"<<endl;
                     return;
                   }
                   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                 }
-                cout<<"Timeout"<<endl;
+                Serial.println("Timeout");
                 mtxWifi.lock();
                 wifiState = TIMEOUT;
                 mtxWifi.unlock();
@@ -124,8 +124,19 @@ void State::push(const NimBLEAttValue &ch) {
               type = ConnectingToWiFiStateSendSize;
               break;
             }
+            case BLESendPacket_token_tag: {
+              string nonce = message->type.token.uuid;
+              Serial.print("nonce=");
+              Serial.println(nonce.c_str());
+              // I have to do this because I'm low on stack space
+              mtxRegisterToken.lock();
+              registerToken = nonce;
+              mtxRegisterToken.unlock();
+              break;
+            }
             default: {
-              cerr << "Unknown packet type=" << message->which_type << endl;
+              Serial.print("Unknown packet type=");
+              Serial.println(message->which_type);
               throw DecodeException();
             }
           }
@@ -161,7 +172,8 @@ void State::push(const NimBLEAttValue &ch) {
           bool status = pb_decode(&stream, WiFiConnectInfo_fields, message.get());
 
           if (!status) {
-            cerr << "Decoding failed:" << PB_GET_ERROR(&stream) << endl;
+            Serial.print("Decoding failed:");
+            Serial.println(PB_GET_ERROR(&stream));
             throw DecodeException();
           }
 
@@ -171,7 +183,8 @@ void State::push(const NimBLEAttValue &ch) {
         break;
       }
       default: {
-        cerr << "Error Pushing Type=" << type << endl;
+        Serial.print("Error Pushing Type=");
+        Serial.println(type);
         printDeque(dequeValue);
         throw StateException();
       }
@@ -225,7 +238,8 @@ vector<uint8_t> State::getPacket() {
       return returnVal.value();
     }
     default: {
-      cerr << "Error Getting Type=" << type << endl;
+      Serial.print("Error Getting Type=");
+      Serial.println(type);
       throw StateException();
     }
   }

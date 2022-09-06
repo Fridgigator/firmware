@@ -1,6 +1,6 @@
 #include <memory>
-#include <iostream>
 #include <cstring>
+#include <HardwareSerial.h>
 #include "GetWiFiStateSizeClass.h"
 #include "generated/packet.pb.h"
 #include "pb_encode.h"
@@ -32,7 +32,8 @@ GetWiFiStateSizeClass::GetWiFiStateSizeClass(WiFiState wifi) {
 
   int status = pb_encode(&output, WiFiConnectResponseInfo_fields, wifiResponsePacket.get());
   if (!status) {
-    cerr << "Encoding failed:" << PB_GET_ERROR(&output) << endl;
+    Serial.print("Encoding failed:");
+    Serial.println(PB_GET_ERROR(&output));
     throw DecodeException();
   }
 

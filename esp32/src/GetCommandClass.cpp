@@ -1,5 +1,4 @@
 #include "GetCommandClass.h"
-#include <iostream>
 
 using namespace std;
 

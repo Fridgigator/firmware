@@ -2,7 +2,6 @@
 #include "generated/packet.pb.h"
 #include "spm_headers/nanopb/pb_encode.h"
 #include "DecodeException.h"
-#include <iostream>
 #include <memory>
 #include <cstring>
 
@@ -34,7 +33,8 @@ SendWifiDataClass::SendWifiDataClass(vector<WiFiStorage> &wifi) {
   }
   int status = pb_encode(&output, WiFiVector_fields, p.get());
   if (!status) {
-    cerr << "Encoding failed:" << PB_GET_ERROR(&output) << endl;
+    Serial.print("Encoding failed:");
+    Serial.println(PB_GET_ERROR(&output));
     throw DecodeException();
   }
   for (int i = 0; i < output.bytes_written; i++) {

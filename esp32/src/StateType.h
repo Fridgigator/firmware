@@ -9,7 +9,7 @@ enum StateType {
   GetWifiUsernamePasswordSize,
   GetWifiUsernamePassword,
   ConnectingToWiFiStateSendSize,
-  ConnectingToWiFiState
+  ConnectingToWiFiState,
 };
 
 #endif //ESP32_STATETYPE_H

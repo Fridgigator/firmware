@@ -1,4 +1,3 @@
-#include <iostream>
 #include "WiFiStorage.h"
 
 WiFiStorage::WiFiStorage(string SSID, uint8_t *BSSID, int32_t Channel, bool isEncrypted) noexcept {
