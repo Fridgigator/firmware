@@ -1,18 +1,20 @@
 #include <Arduino.h>
 #include "NimBLEDevice.h"
 #include "WiFi.h"
-#include "WiFiStorage.h"
-#include "Constants.h"
 #include <vector>
 #include <queue>
 #include <mutex>
 #include <cstring>
 #include <Preferences.h>
 #include <HTTPClient.h>
+#include <ArduinoWebsockets.h>
+#include <thread>
 
 #include "StateException.h"
 #include "State.h"
 #include "uuid.h"
+#include "WiFiStorage.h"
+#include "Constants.h"
 
 using namespace std;
 
@@ -74,6 +76,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 };
 
 vector<uint8_t> getData(NimBLECharacteristic *pRead, NimBLECharacteristic *pWrite);
+websockets::WebsocketsClient client;
 
 CharacteristicCallback *c_callback;
 void setup() {
@@ -113,15 +116,61 @@ void setup() {
   Serial.println("Characteristic defined! Now you can read it in your phone!");
   auto *pServerCallbacks = new ServerCallbacks();
   pServer->setCallbacks(pServerCallbacks);
-
-  WiFi.disconnect();
+  WiFi.setAutoConnect(true);
   WiFi.setAutoReconnect(true);
+  auto websocketPingThread = thread([]{
+    try {
+      while (true) {
+        Serial.print("poll");
+        client.poll();
+        delay(1000);
+      }
+    }catch (...) {
+      Serial.println("Done poll");
+    }
+  });
+  websocketPingThread.detach();
+  client.addHeader("Board", uuid.c_str());
+  client.onMessage([](const websockets::WebsocketsMessage& msg){
+    Serial.print("I got a message: ");
+    Serial.println(msg.c_str());
+  });
+  client.onEvent([](websockets::WebsocketsEvent event, const String& data){
+    if(event == websockets::WebsocketsEvent::ConnectionOpened) {
+      Serial.println("Connection Opened");
+    } else if(event == websockets::WebsocketsEvent::ConnectionClosed) {
+      Serial.println("Connection Closed");
+    } else if(event == websockets::WebsocketsEvent::GotPing) {
+      Serial.println("Got a Ping!");
+    } else if(event == websockets::WebsocketsEvent::GotPong) {
+      Serial.println("Got a Pong!");
+    }
+    Serial.print("Data=");
+    Serial.println(data);
+  });
+  client.setCACert(rootCACertificate);
+  client.connect("wss://fridgigator.herokuapp.com/api/hub-websocket");
+
   delay(100);
 }
 bool timeSet = false;
+int tryingToConnect = 0;
 void setClock();
 void loop() {
+  Serial.print("Is client available?");
+  Serial.print(client.available());
+
   if (WiFi.isConnected()) {
+    if(!client.available()){
+      auto result = client.connect("fridgigator.herokuapp.com",443,"/api/hub-websocket");
+      Serial.print("Connection to websocket: ");
+      Serial.println(result);
+    }
+    Preferences preferences;
+    preferences.begin("permanent", false);
+    auto uuid = string(preferences.getString("uuid").c_str());
+    preferences.end();
+
     Serial.println("Is connected");
     if(!timeSet) {
       setClock();
@@ -133,9 +182,6 @@ void loop() {
     mtxRegisterToken.unlock();
     if(!_registerToken.empty()) {
       HTTPClient http_client;
-      Preferences preferences;
-      preferences.begin("permanent", false);
-      auto uuid = string(preferences.getString("uuid").c_str());
       string url = string("https://fridgigator.herokuapp.com/api/register-hub?hub-name=")+uuid;
       http_client.begin(url.c_str(), rootCACertificate);
       http_client.addHeader("Authorization", _registerToken.c_str());
@@ -155,6 +201,7 @@ void loop() {
     Preferences preferences;
     preferences.begin(WIFI_DATA_KEY,true);
     if (preferences.isKey(WIFI_DATA_KEY_SSID) && preferences.isKey(WIFI_DATA_KEY_PASSWORD)) {
+      Serial.println(preferences.getString(WIFI_DATA_KEY_SSID).c_str());
 
       WiFi.begin(preferences.getString(WIFI_DATA_KEY_SSID).c_str(), preferences.getString(WIFI_DATA_KEY_PASSWORD).c_str());
       preferences.end();
@@ -162,6 +209,10 @@ void loop() {
       while (!WiFi.isConnected()) {
         delay(1000);
         Serial.println("Trying to connect");
+        if(tryingToConnect == 100) {
+          esp_restart();
+        }
+        tryingToConnect++;
       }
       return;
     }
