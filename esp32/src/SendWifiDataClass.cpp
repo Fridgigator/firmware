@@ -9,6 +9,7 @@ using namespace std;
 
 SendWifiDataClass::SendWifiDataClass(vector<WiFiStorage> &wifi) {
   vector<WiFiStorage> _wifi;
+
   auto p = make_unique<WiFiVector>();
   p->data_count = 0;
   auto *buf = new pb_byte_t[2048];

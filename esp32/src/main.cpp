@@ -7,24 +7,36 @@
 #include <cstring>
 #include <Preferences.h>
 #include <HTTPClient.h>
-#include <ArduinoWebsockets.h>
 #include <thread>
+#include <map>
 
 #include "StateException.h"
 #include "State.h"
 #include "uuid.h"
 #include "WiFiStorage.h"
 #include "Constants.h"
+#include "GetSensorData.h"
+#include "WebDataPollingClient.h"
+#include "pb_encode.h"
+#include "generated/FirmwareBackend.pb.h"
+#include "spm_headers/nanopb/pb_decode.h"
+#include "DecodeException.h"
+#include "BLEUtils.h"
+#include "setClock.h"
+#include "HTTPSend.h"
 
 using namespace std;
 
 NimBLECharacteristic *pRead = nullptr;
 mutex mtxState;
+mutex mtxReadPrefs;
 
 mutex mtxRegisterToken;
 string registerToken;
 
-bool isConnected;
+mutex mtxBleIsInUse;
+bool bleIsInUse = false;
+
 State *s;
 
 class CharacteristicCallback : public NimBLECharacteristicCallbacks {
@@ -59,6 +71,9 @@ class CharacteristicCallback : public NimBLECharacteristicCallbacks {
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer) override {
+    mtxBleIsInUse.lock();
+    bleIsInUse = true;
+    mtxBleIsInUse.unlock();
     mtxState.lock();
     delete s;
     s = new State();
@@ -71,16 +86,125 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     delete s;
     s = nullptr;
     mtxState.unlock();
+    mtxBleIsInUse.lock();
+    bleIsInUse = false;
+    mtxBleIsInUse.unlock();
   }
 
 };
 
 vector<uint8_t> getData(NimBLECharacteristic *pRead, NimBLECharacteristic *pWrite);
-websockets::WebsocketsClient client;
-
+WebData::WebDataPollingClient *dataFromServerClient;
 CharacteristicCallback *c_callback;
+GetSensorData *sensorData;
+
+void loop1();
+void clientConnectLoop();
+string uuid;
+
+void recData(BackendToFirmwarePacket packet) {
+
+  switch (packet.which_type) {
+    case BackendToFirmwarePacket_get_sensors_list_tag: {
+      auto res = getScanResults();
+      vector<SensorInfo> sensorInfo;
+      for (int i = 0; i < res.getCount(); i++) {
+        auto device = res.getDevice(i);
+        string addressString = device.getAddress().toString();
+        string nameString = device.getName();
+        SensorInfo info{};
+        int len = 0;
+        for (int j = 0; j < addressString.size() && j < sizeof(info.address) / sizeof(info.address[0]);
+             j++) {
+            info.address[j] = addressString.at(j);
+            len = j;
+
+        }
+        info.address[len+1] = 0;
+        len = 0;
+
+        for (int j = 0; j < nameString.size() && j < sizeof(info.name) / sizeof(info.name[0]); j++) {
+          info.name[j] = nameString.at(j);
+          len = j;
+        }
+        info.name[len+1] = 0;
+        Serial.printf(" - name=%s",info.name);
+        sensorInfo.push_back(info);
+      }
+      res.getCount();
+      auto buf = new pb_byte_t[1024];
+      pb_ostream_t output = pb_ostream_from_buffer(buf, 1024);
+      SensorsList sensorsList{
+          .sensor_info_count = static_cast<pb_size_t>(sensorInfo.size()),
+      };
+
+      Serial.printf("sizeof sensorlist = %d\n", sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]));
+      for (int i = 0; i < sensorInfo.size()
+          && i< sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]); i++) {
+
+        Serial.printf(" - address=%s\n",sensorInfo.at(i).address);
+        Serial.printf(" - name=%s\n",sensorInfo.at(i).name);
+        sensorsList.sensor_info[i] = sensorInfo.at(i);
+
+      }
+      int encodeResult = pb_encode(&output, SensorsList_fields, &sensorsList);
+      if (!encodeResult) {
+        Serial.print("Encoding failed:");
+        Serial.println(PB_GET_ERROR(&output));
+        throw DecodeException();
+      }
+      std::map<string, string> headers;
+      headers.emplace("Board", uuid);
+      std::string url = "/api/send-sensors";
+      Serial.printf("buf size=%d\n", output.bytes_written);
+      PostData(url, headers, buf, output.bytes_written);
+      delete[] buf;
+      break;
+    }
+    case BackendToFirmwarePacket_clear_sensor_list_tag: {
+
+      sensorData->clearDevices();
+
+      break;
+    }
+    case BackendToFirmwarePacket_add_sensor_tag: {
+      sensorData->clearDevices();
+      for(int i = 0;i<packet.type.add_sensor.add_sensor_info_count;i++){
+        auto addSensorInfo = packet.type.add_sensor.add_sensor_info[i];
+        std::string address = addSensorInfo.sensor_info.address;
+        DeviceType deviceType;
+        switch (addSensorInfo.device_type) {
+          case AddSensorInfo_DEVICE_TYPE_TI:deviceType = DeviceType::TI;
+
+            break;
+          case AddSensorInfo_DEVICE_TYPE_NORDIC:deviceType = DeviceType::Nordic;
+            break;
+          case AddSensorInfo_DEVICE_TYPE_CUSTOM:deviceType = DeviceType::Custom;
+            break;
+        };
+
+        sensorData->addDevice(address, deviceType);
+      }
+      break;
+    }
+    default: {
+      Serial.println("Wrong message type\n");
+      throw "Assertion Error";
+    }
+  }
+}
+
+[[noreturn]]
+void outerLoop1(void *arg) {
+  for (;;) {
+    loop1();
+    delay(100);
+  }
+
+}
 void setup() {
   WiFiClass::mode(WIFI_STA);
+  sensorData = new GetSensorData();
 
   Serial.begin(115200);
 
@@ -89,18 +213,18 @@ void setup() {
   NimBLEDevice::init("ESP32");
   Preferences preferences;
   preferences.begin("permanent", false);
-  string uuid = preferences.getString("uuid").c_str();
-  if(!preferences.isKey("uuid")) {
+  uuid = preferences.getString("uuid").c_str();
+  if (!preferences.isKey("uuid")) {
     char returnUUID[37];
     UUIDGen(returnUUID);
     preferences.putString("uuid", returnUUID);
     uuid = preferences.getString("uuid").c_str();
   }
-  Serial.println("uuid=");
-  Serial.println(uuid.c_str());
+  Serial.printf("uuid=%s\n", uuid.c_str());
   preferences.end();
   NimBLEServer *pServer = BLEDevice::createServer();
   NimBLEService *pService = pServer->createService(SERVICE_UUID);
+
   pRead = pService->createCharacteristic(CHARACTERISTIC_UUID,
                                          NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::INDICATE);
   pRead->setCallbacks(c_callback);
@@ -113,103 +237,130 @@ void setup() {
   NimBLEDevice::startAdvertising();
   NimBLEDevice::stopAdvertising();
   NimBLEDevice::startAdvertising();
-  Serial.println("Characteristic defined! Now you can read it in your phone!");
+
   auto *pServerCallbacks = new ServerCallbacks();
   pServer->setCallbacks(pServerCallbacks);
-  WiFi.setAutoConnect(true);
-  WiFi.setAutoReconnect(true);
-  auto websocketPingThread = thread([]{
-    try {
-      while (true) {
-        Serial.print("poll");
-        client.poll();
-        delay(1000);
-      }
-    }catch (...) {
-      Serial.println("Done poll");
-    }
-  });
-  websocketPingThread.detach();
-  client.addHeader("Board", uuid.c_str());
-  client.onMessage([](const websockets::WebsocketsMessage& msg){
-    Serial.print("I got a message: ");
-    Serial.println(msg.c_str());
-  });
-  client.onEvent([](websockets::WebsocketsEvent event, const String& data){
-    if(event == websockets::WebsocketsEvent::ConnectionOpened) {
-      Serial.println("Connection Opened");
-    } else if(event == websockets::WebsocketsEvent::ConnectionClosed) {
-      Serial.println("Connection Closed");
-    } else if(event == websockets::WebsocketsEvent::GotPing) {
-      Serial.println("Got a Ping!");
-    } else if(event == websockets::WebsocketsEvent::GotPong) {
-      Serial.println("Got a Pong!");
-    }
-    Serial.print("Data=");
-    Serial.println(data);
-  });
-  client.setCACert(rootCACertificate);
-  client.connect("wss://fridgigator.herokuapp.com/api/hub-websocket");
 
+  Serial.println("finished adding devices");
+  thread t([]() __attribute__((noreturn)) {
+    for (;;) {
+      mtxBleIsInUse.lock();
+      bool _bleIsInUse = bleIsInUse;
+      mtxBleIsInUse.unlock();
+      if (!_bleIsInUse) {
+        sensorData->loop();
+      }
+      delay(60'000);
+
+    }
+  });
+  t.detach();
   delay(100);
+  TaskHandle_t Task1;
+
+  xTaskCreate(outerLoop1, "Main Loop Task", 32000, (void *) nullptr, 1, &Task1);
+
+  Serial.println("Characteristic defined! Now you can read it in your phone!");
+
 }
+void clientConnectLoop() {
+  TaskHandle_t Task1;
+  xTaskCreate([](void *parameters) {
+    auto headersMap = std::map<string, string>();
+    headersMap.emplace("Board", uuid.c_str());
+    string url = "/api/hub-connect";
+    WebData::WebDataPollingClient dataFromServerClient(url, headersMap);
+    dataFromServerClient.onRecData(recData);
+    for (;;) {
+      dataFromServerClient.poll();
+      delay(500);
+    }
+  }, "Name", 32000, (void *) nullptr, 1, &Task1);
+
+  Serial.println("Finished creating connection");
+}
+
 bool timeSet = false;
 int tryingToConnect = 0;
-void setClock();
-void loop() {
-  Serial.print("Is client available?");
-  Serial.print(client.available());
+bool isConnecting = false;
+
+void loop1() {
+  Serial.printf("Wifi is connected: %d", WiFi.isConnected());
 
   if (WiFi.isConnected()) {
-    if(!client.available()){
-      auto result = client.connect("fridgigator.herokuapp.com",443,"/api/hub-websocket");
-      Serial.print("Connection to websocket: ");
-      Serial.println(result);
-    }
-    Preferences preferences;
-    preferences.begin("permanent", false);
-    auto uuid = string(preferences.getString("uuid").c_str());
-    preferences.end();
+    Serial.println("is connected");
 
-    Serial.println("Is connected");
-    if(!timeSet) {
+    if (!timeSet) {
+      Serial.println("setting clock");
       setClock();
+      clientConnectLoop();
+
       timeSet = true;
     }
     mtxRegisterToken.lock();
     auto _registerToken = registerToken;
     registerToken = "";
     mtxRegisterToken.unlock();
-    if(!_registerToken.empty()) {
+
+    if (!_registerToken.empty()) {
+      Serial.println("token register");
+
+      String url = ("https://fridgigator.herokuapp.com/api/register-hub?hub-uuid=");
+      url += (uuid.c_str());
+      TaskHandle_t Task1;
       HTTPClient http_client;
-      string url = string("https://fridgigator.herokuapp.com/api/register-hub?hub-name=")+uuid;
-      http_client.begin(url.c_str(), rootCACertificate);
+      Serial.printf("url: %s\n", url.c_str());
+      bool begin = http_client.begin(url, rootCACertificate);
+      Serial.printf("begin: %d \n", begin);
       http_client.addHeader("Authorization", _registerToken.c_str());
-      Serial.println("main - About to get");
-      Serial.println(ESP.getFreeHeap());
-      int httpCode = http_client.GET();
-      Serial.println(" main -  Got");
-      Serial.println(std::to_string(httpCode).c_str());
+      log_d("Free internal heap before TLS %u", ESP.getFreeHeap());
+      log_d("Free PSRAM %u", ESP.getFreePsram());
+      int res = http_client.GET();
+      Serial.printf("res: %d\n", res);
+
+      int httpCode = res;
       if (httpCode < 0) {
         Serial.print(" main -  get failed: ");
         Serial.println(HTTPClient::errorToString(httpCode));
 
       }
+
     }
 
   } else {
+    Serial.println("WiFi is not connected");
     Preferences preferences;
-    preferences.begin(WIFI_DATA_KEY,true);
-    if (preferences.isKey(WIFI_DATA_KEY_SSID) && preferences.isKey(WIFI_DATA_KEY_PASSWORD)) {
-      Serial.println(preferences.getString(WIFI_DATA_KEY_SSID).c_str());
+    mtxReadPrefs.lock();
+    preferences.begin(WIFI_DATA_KEY, true);
+    bool hasKey = preferences.isKey(WIFI_DATA_KEY_SSID) && preferences.isKey(WIFI_DATA_KEY_PASSWORD);
+    preferences.end();
+    mtxReadPrefs.unlock();
+    Serial.printf("has key=%d\n", hasKey);
 
-      WiFi.begin(preferences.getString(WIFI_DATA_KEY_SSID).c_str(), preferences.getString(WIFI_DATA_KEY_PASSWORD).c_str());
-      preferences.end();
+    if (hasKey) {
+      while (!WiFi.isConnected() && !isConnecting) {
+        preferences.begin(WIFI_DATA_KEY, true);
+        mtxReadPrefs.lock();
+        auto key = preferences.getString(WIFI_DATA_KEY_SSID);
+        auto pass = preferences.getString(WIFI_DATA_KEY_PASSWORD);
+        Serial.printf("%s: %s\n", key.c_str(), pass.c_str());
 
-      while (!WiFi.isConnected()) {
-        delay(1000);
-        Serial.println("Trying to connect");
-        if(tryingToConnect == 100) {
+        preferences.end();
+        mtxReadPrefs.unlock();
+
+        wl_status_t status = WiFi.status();
+        Serial.printf("status=%d\n", status);
+
+        WiFi.begin(key.c_str(),
+                   pass.c_str());
+
+        delay(10000);
+        status = WiFi.status();
+        Serial.printf("status=%d\n", status);
+
+        Serial.printf("Trying to connect, key=%s, pass=%s", key.c_str(), pass.c_str());
+        if (tryingToConnect == 1000) {
+          Serial.println("Tried too long to connect. Restarting \n\n");
           esp_restart();
         }
         tryingToConnect++;
@@ -218,24 +369,9 @@ void loop() {
     }
     Serial.println("Is not connected and cannot connect");
   }
-  Serial.println(ESP.getFreeHeap());
-  delay(1000);
-}
-void setClock() {
-  configTime(0, 0, "pool.ntp.org");
 
-  Serial.print(F("Waiting for NTP time sync: "));
-  time_t nowSecs = time(nullptr);
-  while (nowSecs < 8 * 3600 * 2) {
-    delay(500);
-    Serial.print(F("."));
-    yield();
-    nowSecs = time(nullptr);
-  }
+  delay(100);
 
-  Serial.println();
-  struct tm timeinfo{};
-  gmtime_r(&nowSecs, &timeinfo);
-  Serial.print(F("Current time: "));
-  Serial.print(asctime(&timeinfo));
 }
+
+void loop() {}

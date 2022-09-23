@@ -8,7 +8,6 @@
 #include <thread>
 #include <mutex>
 #include <Preferences.h>
-#include <HTTPClient.h>
 #include "WiFiState.h"
 #include "GetWiFiStateSizeClass.h"
 #include "spm_headers/nanopb/pb_encode.h"
@@ -18,11 +17,11 @@
 using namespace std;
 
 void printVec(optional<vector<uint8_t>> val);
-void printDeque(deque<uint8_t>& val);
-
+void printDeque(deque<uint8_t> &val);
 
 mutex mtxWifi;
 WiFiState wifiState;
+
 State::State() {
   currentState = nullptr;
   type = Initial;
@@ -67,7 +66,7 @@ void State::push(const NimBLEAttValue &ch) {
 
           if (!status) {
             Serial.print("Decoding failed (get command):");
-            Serial.println( PB_GET_ERROR(&stream));
+            Serial.println(PB_GET_ERROR(&stream));
             throw DecodeException();
           }
           switch (message->which_type) {
@@ -80,13 +79,13 @@ void State::push(const NimBLEAttValue &ch) {
                 delay(10);
               }
 
-
               type = SendWifiDataSize;
               currentState = {SendWifiDataClass(wifis)};
               break;
             }
             case BLESendPacket_wifiConnectInfo_tag: {
               auto wifiConnectInfo = make_unique<WiFiConnectInfo>(message->type.wifiConnectInfo);
+              isConnecting = true;
               WiFiClass::mode(WIFI_STA);
               WiFi.begin(wifiConnectInfo->ssid, wifiConnectInfo->password);
               Serial.print("Connecting to WiFi ..\n");
@@ -101,13 +100,17 @@ void State::push(const NimBLEAttValue &ch) {
                     wifiState = CONNECTED;
                     mtxWifi.unlock();
                     Preferences preferences;
+                    mtxReadPrefs.lock();
                     preferences.begin(WIFI_DATA_KEY);
                     preferences.putString(WIFI_DATA_KEY_PASSWORD, wifiConnectInfo->password);
                     preferences.putString(WIFI_DATA_KEY_SSID, wifiConnectInfo->ssid);
 
-
                     preferences.end();
+                    mtxReadPrefs.unlock();
+                    isConnecting = false;
                     return;
+
+
                   }
                   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                 }
@@ -260,13 +263,13 @@ void printVec(optional<vector<uint8_t>> val) {
   }
 
 }
-void printDeque(deque<uint8_t>& val) {
-    for (int i = 0; i < val.size(); i++) {
-      Serial.print("v[");
-      Serial.print(i);
-      Serial.print("]=");
-      Serial.print((int) val[i]);
-      Serial.print("\n");
-    }
+void printDeque(deque<uint8_t> &val) {
+  for (int i = 0; i < val.size(); i++) {
+    Serial.print("v[");
+    Serial.print(i);
+    Serial.print("]=");
+    Serial.print((int) val[i]);
+    Serial.print("\n");
+  }
 
 }
