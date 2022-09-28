@@ -1,7 +1,7 @@
 #include "SendWifiDataClass.h"
 #include "generated/packet.pb.h"
-#include "spm_headers/nanopb/pb_encode.h"
 #include "DecodeException.h"
+#include "pb_encode.h"
 #include <memory>
 #include <cstring>
 
