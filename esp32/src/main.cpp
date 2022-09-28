@@ -19,7 +19,7 @@
 #include "WebDataPollingClient.h"
 #include "pb_encode.h"
 #include "generated/FirmwareBackend.pb.h"
-#include "spm_headers/nanopb/pb_decode.h"
+#include "pb_decode.h"
 #include "DecodeException.h"
 #include "BLEUtils.h"
 #include "setClock.h"

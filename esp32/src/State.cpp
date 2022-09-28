@@ -10,9 +10,7 @@
 #include <Preferences.h>
 #include "WiFiState.h"
 #include "GetWiFiStateSizeClass.h"
-#include "spm_headers/nanopb/pb_encode.h"
 #include "Constants.h"
-#include "ConnectionException.h"
 
 using namespace std;
 
