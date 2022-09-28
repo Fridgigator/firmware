@@ -1,9 +1,17 @@
 #include "BLEUtils.h"
-NimBLEScanResults getScanResults() {
-  auto scan = NimBLEDevice::getScan();
-  scan->clearResults();
+NimBLEScanResults ScanResults::getScanResults() {
+  scanResults = NimBLEDevice::getScan();
+  scanResults->clearResults();
   delay(100);
-  scan->start(5);
+  scanResults->start(5);
   delay(100);
-  return scan->getResults();
+  return scanResults->getResults();
+}
+ScanResults::ScanResults() = default;
+
+ScanResults::~ScanResults(){
+  if (scanResults != nullptr) {
+    scanResults->stop();
+    scanResults->clearResults();
+  }
 }

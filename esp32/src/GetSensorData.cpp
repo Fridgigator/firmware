@@ -249,7 +249,10 @@ void GetSensorData::loop() {
 
   Serial.println("Before get scan");
   delay(100);
-  auto scanResults = getScanResults();
+
+  ScanResults scanResultsClass;
+  auto scanResults = scanResultsClass.getScanResults();
+
   for (int i = 0; i < scanResults.getCount(); i++) {
     auto dev = scanResults.getDevice(i);
     if (dev.getAddress().toString() == std::get<0>(curAddress)) {

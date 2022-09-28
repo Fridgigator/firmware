@@ -106,7 +106,8 @@ void recData(BackendToFirmwarePacket packet) {
 
   switch (packet.which_type) {
     case BackendToFirmwarePacket_get_sensors_list_tag: {
-      auto res = getScanResults();
+      ScanResults scanResultsClass;
+      auto res = scanResultsClass.getScanResults();
       vector<SensorInfo> sensorInfo;
       for (int i = 0; i < res.getCount(); i++) {
         auto device = res.getDevice(i);
