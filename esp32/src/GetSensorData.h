@@ -16,9 +16,8 @@ class GetSensorData {
  public:
   GetSensorData();
   void loop();
-  void addDevice(const std::string &name, DeviceType deviceType);
   void clearDevices();
-
+  void setDevices(std::vector<std::tuple<std::string, DeviceType>> &devices);
 };
 
 #endif //ESP32_SRC_GETSENSORDATA_H_

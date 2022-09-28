@@ -116,19 +116,19 @@ void recData(BackendToFirmwarePacket packet) {
         int len = 0;
         for (int j = 0; j < addressString.size() && j < sizeof(info.address) / sizeof(info.address[0]);
              j++) {
-            info.address[j] = addressString.at(j);
-            len = j;
+          info.address[j] = addressString.at(j);
+          len = j;
 
         }
-        info.address[len+1] = 0;
+        info.address[len + 1] = 0;
         len = 0;
 
         for (int j = 0; j < nameString.size() && j < sizeof(info.name) / sizeof(info.name[0]); j++) {
           info.name[j] = nameString.at(j);
           len = j;
         }
-        info.name[len+1] = 0;
-        Serial.printf(" - name=%s",info.name);
+        info.name[len + 1] = 0;
+        Serial.printf(" - name=%s", info.name);
         sensorInfo.push_back(info);
       }
       res.getCount();
@@ -140,10 +140,10 @@ void recData(BackendToFirmwarePacket packet) {
 
       Serial.printf("sizeof sensorlist = %d\n", sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]));
       for (int i = 0; i < sensorInfo.size()
-          && i< sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]); i++) {
+          && i < sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]); i++) {
 
-        Serial.printf(" - address=%s\n",sensorInfo.at(i).address);
-        Serial.printf(" - name=%s\n",sensorInfo.at(i).name);
+        Serial.printf(" - address=%s\n", sensorInfo.at(i).address);
+        Serial.printf(" - name=%s\n", sensorInfo.at(i).name);
         sensorsList.sensor_info[i] = sensorInfo.at(i);
 
       }
@@ -168,8 +168,8 @@ void recData(BackendToFirmwarePacket packet) {
       break;
     }
     case BackendToFirmwarePacket_add_sensor_tag: {
-      sensorData->clearDevices();
-      for(int i = 0;i<packet.type.add_sensor.add_sensor_info_count;i++){
+      vector<std::tuple<std::string, DeviceType>> newDevices;
+      for (int i = 0; i < packet.type.add_sensor.add_sensor_info_count; i++) {
         auto addSensorInfo = packet.type.add_sensor.add_sensor_info[i];
         std::string address = addSensorInfo.sensor_info.address;
         DeviceType deviceType;
@@ -181,15 +181,14 @@ void recData(BackendToFirmwarePacket packet) {
             break;
           case AddSensorInfo_DEVICE_TYPE_CUSTOM:deviceType = DeviceType::Custom;
             break;
-        };
-
-        sensorData->addDevice(address, deviceType);
+        }
+        newDevices.emplace_back(std::tuple(address, deviceType));
       }
+      sensorData->setDevices(newDevices);
       break;
     }
     default: {
-      Serial.println("Wrong message type\n");
-      throw "Assertion Error";
+      break;
     }
   }
 }
@@ -250,7 +249,7 @@ void setup() {
       if (!_bleIsInUse) {
         sensorData->loop();
       }
-      delay(60'000);
+      delay(10'000);
 
     }
   });
@@ -258,7 +257,7 @@ void setup() {
   delay(100);
   TaskHandle_t Task1;
 
-  xTaskCreate(outerLoop1, "Main Loop Task", 32000, (void *) nullptr, 1, &Task1);
+  xTaskCreate(outerLoop1, "Main Loop Task", 16000, (void *) nullptr, 1, &Task1);
 
   Serial.println("Characteristic defined! Now you can read it in your phone!");
 
@@ -273,7 +272,7 @@ void clientConnectLoop() {
     dataFromServerClient.onRecData(recData);
     for (;;) {
       dataFromServerClient.poll();
-      delay(500);
+      delay(2000);
     }
   }, "Name", 32000, (void *) nullptr, 1, &Task1);
 
@@ -305,12 +304,12 @@ void loop1() {
     if (!_registerToken.empty()) {
       Serial.println("token register");
 
-      String url = ("https://fridgigator.herokuapp.com/api/register-hub?hub-uuid=");
+      String url = ("http://fridgigator.herokuapp.com/api/register-hub?hub-uuid=");
       url += (uuid.c_str());
       TaskHandle_t Task1;
       HTTPClient http_client;
       Serial.printf("url: %s\n", url.c_str());
-      bool begin = http_client.begin(url, rootCACertificate);
+      bool begin = http_client.begin(url/*, rootCACertificate*/);
       Serial.printf("begin: %d \n", begin);
       http_client.addHeader("Authorization", _registerToken.c_str());
       log_d("Free internal heap before TLS %u", ESP.getFreeHeap());
@@ -324,7 +323,7 @@ void loop1() {
         Serial.println(HTTPClient::errorToString(httpCode));
 
       }
-
+      http_client.end();
     }
 
   } else {

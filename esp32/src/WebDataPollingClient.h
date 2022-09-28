@@ -14,8 +14,8 @@ class WebDataPollingClient {
   std::map<std::string, std::string> headers;
   std::string url;
  public:
-  WebDataPollingClient(std::string& url, const std::map<std::string, std::string> &headers);
-  void onRecData(const std::function<void(BackendToFirmwarePacket)>& callback);
+  WebDataPollingClient(std::string &url, const std::map<std::string, std::string> &headers);
+  void onRecData(const std::function<void(BackendToFirmwarePacket)> &callback);
   void poll();
 };
 }

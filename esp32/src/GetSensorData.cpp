@@ -19,6 +19,16 @@ static BLERemoteCharacteristic *pRemoteNordicCharacteristic = nullptr;
 static BLERemoteCharacteristic *pRemoteTIWriteCharacteristic = nullptr;
 static BLERemoteCharacteristic *pRemoteReadCharacteristic = nullptr;
 
+template<typename T>
+bool contains(std::vector<T> &v, T key) {
+  for (const auto &e : v) {
+    if (e == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void notifyNordicCallback(
     BLERemoteCharacteristic *pBLERemoteCharacteristic,
     const uint8_t *pData,
@@ -31,18 +41,19 @@ void notifyNordicCallback(
   Serial.print("data: ");
   int low = pData[0];
   int high = pData[1];
-  std::thread t([low, high]() {
-    int innerLow = low;
-    int innerHigh = high;
+  std::string
+      remoteAddress = pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
+  auto* sendTuple = new std::tuple<int, int, std::string>(low, high, remoteAddress);
+  TaskHandle_t Task1;
+  xTaskCreate([](void* arg) {
+    auto [innerLow, innerHigh, innerRemoteAddress] = *(std::tuple<int, int, std::string>*)(arg);
     Serial.printf("addr: %p\n", &innerLow);
     Serial.printf("temperature (Nordic): %d.%d\n", innerLow, innerHigh);
+    PostData((std::string)("/api/send-data?data-type=temp&address=") + innerRemoteAddress + "&value="
+                 + std::to_string(innerLow), std::map<std::string, std::string>(), {}, 0);
+    delete  (std::tuple<int, int, std::string>*)(arg);
+  }, "Sending Sensor Data", 16000, (void *) sendTuple, 1, &Task1);
 
-    std::string url = ("/api/send-data?hub-uuid=") + uuid;
-    std::map<std::string, std::string> headers;
-    headers.emplace("BoardType", "Nordic");
-    PostData(url, headers, reinterpret_cast<uint8_t *>(&innerLow), sizeof(innerLow));
-  });
-  t.detach();
 }
 
 void notifyTICallback(
@@ -52,22 +63,29 @@ void notifyTICallback(
     bool isNotify) {
   Serial.print("Notify callback for characteristic ");
   Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
+  std::string
+      remoteAddress = pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
   Serial.print(" of data length ");
   Serial.println(length);
   assert(length == 4);
   static_assert(sizeof(float) == 4, "float size is expected to be 4 bytes");
   float f;
   memcpy(&f, pData, 4);
-  Serial.printf("addr: %p\n", &f);
-  std::thread t([f]() {
-    float fInner = f;
+  Serial.printf("addr: %p\n", f);
+  TaskHandle_t Task1;
+
+  auto* sendTuple = new std::tuple<float, std::string>(f, remoteAddress);
+  xTaskCreate( [](void* arg) {
+    auto [fInner, innerRemoteAddress] = *(std::tuple<float, std::string>*)(arg);
     Serial.printf("temperature (TI): %f\n", fInner);
-    std::string url = ("/api/send-data?hub-uuid=") + uuid;
+    std::string url =
+        ("/api/send-data?data-type=temp&address=") + innerRemoteAddress + "&value=" + std::to_string(fInner);
+    Serial.printf("url: %s\n", url.c_str());
+
     std::map<std::string, std::string> headers;
-    headers.emplace("BoardType", "TI");
-    PostData(url, headers, reinterpret_cast<uint8_t *>(&fInner), sizeof(fInner));
-  });
-  t.detach();
+    PostData(url, headers, {}, 0);
+    delete (std::tuple<float, std::string>*)(arg);
+  }, "Sending Sensor Data", 16000, (void *) sendTuple, 1, &Task1);
 }
 
 bool connectToServer(BLEAdvertisedDevice &device,
@@ -187,6 +205,7 @@ struct ParamArgs {
 };
 std::mutex isConnectingBLEMtx;
 bool isConnectingBLE = false;
+
 [[noreturn]] void innerConnectToServer(void *parameters) {
 
   auto pa = (ParamArgs *) parameters;
@@ -197,63 +216,66 @@ bool isConnectingBLE = false;
   isConnectingBLEMtx.lock();
   isConnectingBLE = false;
   isConnectingBLEMtx.unlock();
-
+  vTaskDelete(nullptr);
   for (;;) {
-    delay(1);
   }
 }
 
 void GetSensorData::loop() {
-  Serial.println("in loop");
+  Serial.println("in loop\n\n\n\n\n\n");
 
   mtxGetBLEAddress.lock();
-  if(!addresses.empty()) {
-    auto curAddress = addresses.front();
-    addresses.pop_front();
-    Serial.printf(" - %s\n", std::get<0>(curAddress).c_str());
-    addresses.emplace_back(curAddress);
-    mtxGetBLEAddress.unlock();
+  bool addressesEmpty = addresses.empty();
+  mtxGetBLEAddress.unlock();
 
-    Serial.println("Before get scan");
-    delay(100);
-    auto scanResults = getScanResults();
-    for (int i = 0; i < scanResults.getCount(); i++) {
-      auto dev = scanResults.getDevice(i);
-      if (dev.getAddress().toString() == std::get<0>(curAddress)) {
-        Serial.printf("Found %s - %d\n", dev.getName().c_str(), dev.getAddressType());
-        TaskHandle_t Task1;
-        ParamArgs pa{
-            .dev = dev,
-            .deviceType = std::get<1>(curAddress),
-            .pClient = pClient,
-        };
-        xTaskCreate(innerConnectToServer, "Name", 16000, (void *) &pa, 1, &Task1);
-        delay(30000);
-        isConnectingBLEMtx.lock();
-        if (isConnectingBLE) {
-          Serial.println("Restarting");
-          esp_restart();
-        }
+  if (addressesEmpty) {
+
+    delay(500);
+    return;
+  }
+
+  mtxGetBLEAddress.lock();
+  auto curAddress = addresses.front();
+  addresses.pop_front();
+  Serial.printf(" - %s\n", std::get<0>(curAddress).c_str());
+  addresses.emplace_back(curAddress);
+  mtxGetBLEAddress.unlock();
+
+  Serial.println("Before get scan");
+  delay(100);
+  auto scanResults = getScanResults();
+  for (int i = 0; i < scanResults.getCount(); i++) {
+    auto dev = scanResults.getDevice(i);
+    if (dev.getAddress().toString() == std::get<0>(curAddress)) {
+      Serial.printf("Found %s - %d\n", dev.getName().c_str(), dev.getAddressType());
+      TaskHandle_t Task1;
+      ParamArgs pa{
+          .dev = dev,
+          .deviceType = std::get<1>(curAddress),
+          .pClient = pClient,
+      };
+      xTaskCreate(innerConnectToServer, "Name", 16000, (void *) &pa, 1, &Task1);
+      delay(30000);
+      isConnectingBLEMtx.lock();
+      if (isConnectingBLE) {
+        Serial.println("Restarting");
         isConnectingBLEMtx.unlock();
-        if (pRemoteReadCharacteristic != nullptr) {
-          pRemoteReadCharacteristic->registerForNotify(nullptr);
-        }
-        vTaskDelete(Task1);
-        if (pClient != nullptr && pClient->isConnected()) {
-          Serial.print("disConnectingBLE\n");
-          pClient->disconnect();
-        }
+
+        esp_restart();
+      }
+      isConnectingBLEMtx.unlock();
+      if (pRemoteReadCharacteristic != nullptr) {
+        pRemoteReadCharacteristic->registerForNotify(nullptr);
+      }
+      //vTaskDelete(Task1);
+      //Task1 = nullptr;
+      if (pClient != nullptr && pClient->isConnected()) {
+        Serial.print("disConnectingBLE\n");
+        pClient->disconnect();
       }
     }
-  } else {
-    mtxGetBLEAddress.unlock();
   }
-  delay(500);
-}
-void GetSensorData::addDevice(const std::string &name, DeviceType deviceType) {
-  mtxGetBLEAddress.lock();
-  addresses.emplace_back(std::tuple(name, deviceType));
-  mtxGetBLEAddress.unlock();
+
 }
 GetSensorData::GetSensorData() {
   pClient = NimBLEDevice::createClient();
@@ -261,6 +283,25 @@ GetSensorData::GetSensorData() {
 void GetSensorData::clearDevices() {
   mtxGetBLEAddress.lock();
   addresses.clear();
+  mtxGetBLEAddress.unlock();
+}
+void GetSensorData::setDevices(std::vector<std::tuple<std::string, DeviceType>> &newDevice) {
+  mtxGetBLEAddress.lock();
+  std::vector<std::tuple<std::basic_string<char>, DeviceType>> newVec;
+  for (const auto &e : addresses) {
+    if (contains(newDevice, e)) {
+      newVec.emplace_back(e);
+    }
+  }
+  for (const auto &e : newDevice) {
+    if (!contains(newVec, e)) {
+      newVec.emplace_back(e);
+    }
+  }
+  addresses.clear();
+  for (const auto &e : newVec) {
+    addresses.emplace_back(e);
+  }
   mtxGetBLEAddress.unlock();
 }
 
