@@ -43,15 +43,20 @@ void notifyNordicCallback(
   int high = pData[1];
   std::string
       remoteAddress = pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
-  auto* sendTuple = new std::tuple<int, int, std::string>(low, high, remoteAddress);
+  auto *sendTuple = new std::tuple<int, int, std::string>(low, high, remoteAddress);
   TaskHandle_t Task1;
-  xTaskCreate([](void* arg) {
-    auto [innerLow, innerHigh, innerRemoteAddress] = *(std::tuple<int, int, std::string>*)(arg);
+  xTaskCreate([](void *arg) {
+    auto [innerLow, innerHigh, innerRemoteAddress] = *(std::tuple<int, int, std::string> *) (arg);
     Serial.printf("addr: %p\n", &innerLow);
     Serial.printf("temperature (Nordic): %d.%d\n", innerLow, innerHigh);
-    PostData((std::string)("/api/send-data?data-type=temp&address=") + innerRemoteAddress + "&value="
-                 + std::to_string(innerLow), std::map<std::string, std::string>(), {}, 0);
-    delete  (std::tuple<int, int, std::string>*)(arg);
+
+    PostData((std::string) ("/api/send-data?data-type=temp&address=") + innerRemoteAddress + "&value="
+                 + std::to_string(innerLow) + "." + std::to_string(innerHigh),
+             std::map<std::string, std::string>(),
+             {},
+             0);
+    delete (std::tuple<int, int, std::string> *) (arg);
+    vTaskDelete(nullptr);
   }, "Sending Sensor Data", 16000, (void *) sendTuple, 1, &Task1);
 
 }
@@ -74,9 +79,9 @@ void notifyTICallback(
   Serial.printf("addr: %p\n", f);
   TaskHandle_t Task1;
 
-  auto* sendTuple = new std::tuple<float, std::string>(f, remoteAddress);
-  xTaskCreate( [](void* arg) {
-    auto [fInner, innerRemoteAddress] = *(std::tuple<float, std::string>*)(arg);
+  auto *sendTuple = new std::tuple<float, std::string>(f, remoteAddress);
+  xTaskCreate([](void *arg) {
+    auto [fInner, innerRemoteAddress] = *(std::tuple<float, std::string> *) (arg);
     Serial.printf("temperature (TI): %f\n", fInner);
     std::string url =
         ("/api/send-data?data-type=temp&address=") + innerRemoteAddress + "&value=" + std::to_string(fInner);
@@ -84,7 +89,8 @@ void notifyTICallback(
 
     std::map<std::string, std::string> headers;
     PostData(url, headers, {}, 0);
-    delete (std::tuple<float, std::string>*)(arg);
+    delete (std::tuple<float, std::string> *) (arg);
+    vTaskDelete(nullptr);
   }, "Sending Sensor Data", 16000, (void *) sendTuple, 1, &Task1);
 }
 
