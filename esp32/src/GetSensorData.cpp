@@ -19,6 +19,20 @@ static BLERemoteCharacteristic *pRemoteNordicCharacteristic = nullptr;
 static BLERemoteCharacteristic *pRemoteTIWriteCharacteristic = nullptr;
 static BLERemoteCharacteristic *pRemoteReadCharacteristic = nullptr;
 
+unsigned long getTime() {
+  time_t now;
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    //Serial.println("Failed to obtain time");
+    return(0);
+  }
+  time(&now);
+  return now;
+}
+
+unsigned long lastGotData = 0;
+std::mutex lastGotDataMtx;
+
 template<typename T>
 bool contains(std::vector<T> &v, T key) {
   for (const auto &e : v) {
@@ -45,6 +59,10 @@ void notifyNordicCallback(
       remoteAddress = pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
   auto *sendTuple = new std::tuple<int, int, std::string>(low, high, remoteAddress);
   TaskHandle_t Task1;
+  lastGotDataMtx.lock();
+  lastGotData = getTime();
+  lastGotDataMtx.unlock();
+
   xTaskCreate([](void *arg) {
     auto [innerLow, innerHigh, innerRemoteAddress] = *(std::tuple<int, int, std::string> *) (arg);
     Serial.printf("addr: %p\n", &innerLow);
@@ -78,6 +96,10 @@ void notifyTICallback(
   memcpy(&f, pData, 4);
   Serial.printf("addr: %p\n", f);
   TaskHandle_t Task1;
+
+  lastGotDataMtx.lock();
+  lastGotData = getTime();
+  lastGotDataMtx.unlock();
 
   auto *sendTuple = new std::tuple<float, std::string>(f, remoteAddress);
   xTaskCreate([](void *arg) {
@@ -215,9 +237,6 @@ bool isConnectingBLE = false;
 [[noreturn]] void innerConnectToServer(void *parameters) {
 
   auto pa = (ParamArgs *) parameters;
-  isConnectingBLEMtx.lock();
-  isConnectingBLE = true;
-  isConnectingBLEMtx.unlock();
   connectToServer(pa->dev, pa->deviceType, pa->pClient);
   isConnectingBLEMtx.lock();
   isConnectingBLE = false;
@@ -263,10 +282,17 @@ void GetSensorData::loop() {
           .deviceType = std::get<1>(curAddress),
           .pClient = pClient,
       };
-      xTaskCreate(innerConnectToServer, "Name", 16000, (void *) &pa, 1, &Task1);
-      delay(30000);
       isConnectingBLEMtx.lock();
-      if (isConnectingBLE) {
+      isConnectingBLE = true;
+      isConnectingBLEMtx.unlock();
+      xTaskCreate(innerConnectToServer, "Name", 16000, (void *) &pa, 1, &Task1);
+      delay(30'000);
+      lastGotDataMtx.lock();
+      unsigned long _lastGotData = lastGotData;
+      lastGotDataMtx.unlock();
+
+      isConnectingBLEMtx.lock();
+      if (isConnectingBLE || (_lastGotData != 0 && getTime() - lastGotData > 120'000)) {
         Serial.println("Restarting");
         isConnectingBLEMtx.unlock();
 
