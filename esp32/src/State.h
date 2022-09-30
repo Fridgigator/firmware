@@ -4,15 +4,15 @@
 #include <Arduino.h>
 #include <variant>
 #include "NimBLEDevice.h"
-#include "GetSizeClass.h"
 #include "SendWifiDataClass.h"
 #include "GetCommandClass.h"
 #include "GetWifiUsernamePasswordClass.h"
 #include "GetWiFiStateSizeClass.h"
+#include "StateType.h"
 
 class State {
   std::variant<void *,
-               GetSizeClass,
+               int,
                GetCommandClass,
                SendWifiDataClass,
                GetWifiUsernamePasswordClass,

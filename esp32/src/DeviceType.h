@@ -3,7 +3,8 @@
 enum DeviceType {
   Nordic,
   TI,
-  Custom
+  Custom,
+  Hub
 };
 
 #endif //ESP32_SRC_DEVICETYPE_H_

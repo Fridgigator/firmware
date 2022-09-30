@@ -9,9 +9,7 @@
 #include "DeviceType.h"
 #include "NimBLEDevice.h"
 class GetSensorData {
-  std::deque<std::tuple<std::string, DeviceType>> addresses;
   NimBLEClient *pClient;
-  std::mutex mtxGetBLEAddress;
 
  public:
   GetSensorData();
@@ -19,5 +17,6 @@ class GetSensorData {
   void clearDevices();
   void setDevices(std::vector<std::tuple<std::string, DeviceType>> &devices);
 };
+extern GetSensorData *getSensorData;
 
 #endif //ESP32_SRC_GETSENSORDATA_H_

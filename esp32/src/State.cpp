@@ -8,9 +8,12 @@
 #include <thread>
 #include <mutex>
 #include <Preferences.h>
+#include <cstring>
 #include "WiFiState.h"
 #include "GetWiFiStateSizeClass.h"
 #include "Constants.h"
+#include "GetSensorData.h"
+#include "SendData.h"
 
 using namespace std;
 
@@ -24,34 +27,47 @@ State::State() {
   currentState = nullptr;
   type = Initial;
 }
-
+struct StateParser {
+  NimBLEAttValue *ch;
+  State *t;
+};
 void State::push(const NimBLEAttValue &ch) {
   deque<uint8_t> dequeValue;
   const uint8_t *rawChPointer = ch.data();
   const uint16_t rawChSize = ch.size();
+  Serial.printf("dequeue size=%d", rawChSize);
   for (int i = 0; i < rawChSize; i++) {
     dequeValue.push_back(rawChPointer[i]);
   }
-
   while (!dequeValue.empty()) {
+    Serial.printf("type: %d\n", type);
+
     switch (type) {
       case Initial: {
         type = GetSize;
         array<uint8_t, 4> sizeVector{{}};
 
         sizeVector.at(0) = dequeValue.front();
+
         dequeValue.pop_front();
         sizeVector.at(1) = dequeValue.front();
+
         dequeValue.pop_front();
         sizeVector.at(2) = dequeValue.front();
+
         dequeValue.pop_front();
         sizeVector.at(3) = dequeValue.front();
+
         dequeValue.pop_front();
-        currentState = {GetCommandClass(GetSizeClass(sizeVector).getSize())};
+
+        int size = 0;
+        std::memcpy(&size, sizeVector.data(), 4);
+        currentState = {GetCommandClass(size)};
         type = GetCommand;
         break;
       }
       case GetCommand: {
+
         auto result = std::get<GetCommandClass>(currentState).read(dequeValue);
         if (result.has_value()) {
           // Packet is huge and takes up too much stack space;
@@ -67,6 +83,8 @@ void State::push(const NimBLEAttValue &ch) {
             Serial.println(PB_GET_ERROR(&stream));
             throw DecodeException();
           }
+          Serial.printf("command: %d\n", message->which_type);
+
           switch (message->which_type) {
             case BLESendPacket_getWifi_tag: {
               vector<WiFiStorage> wifis;
@@ -90,7 +108,7 @@ void State::push(const NimBLEAttValue &ch) {
               mtxWifi.lock();
               wifiState = CONNECTING;
               mtxWifi.unlock();
-              std::thread t([wifiConnectInfo = move(wifiConnectInfo)]() {
+              std::thread th([wifiConnectInfo = move(wifiConnectInfo)]() {
                 for (int i = 0; i < 5; i++) {
                   if (WiFi.isConnected()) {
 
@@ -116,7 +134,7 @@ void State::push(const NimBLEAttValue &ch) {
                 wifiState = TIMEOUT;
                 mtxWifi.unlock();
               });
-              t.detach();
+              th.detach();
               type = Initial;
               break;
             }
@@ -132,6 +150,85 @@ void State::push(const NimBLEAttValue &ch) {
               mtxRegisterToken.lock();
               registerToken = nonce;
               mtxRegisterToken.unlock();
+              break;
+            }
+            case BLESendPacket_crossDevicePacket_tag : {
+
+              auto values = &message->type.crossDevicePacket.values;
+              auto s = &message->type.crossDevicePacket.sensorList;
+              Serial.printf("Getting cross device packet, values_count=%d\n", values->values_count);
+              Serial.printf("Getting cross device packet, sensor_info_count=%d\n", s->sensor_info_count);
+              std::vector<std::tuple<std::string, DeviceType>> devices;
+              for (int i = 0; i < s->sensor_info_count; i++) {
+                Serial.printf("\nsensor: \n  -  %s:, %d\n", s->sensor_info[i].address, s->sensor_info[i].device_type);
+                string address = s->sensor_info[i].address;
+                DeviceType t;
+                switch (s->sensor_info[i].device_type) {
+                  case SensorInfoInterDevice_DEVICE_TYPE_CUSTOM:t = DeviceType::Custom;
+                    break;
+                  case SensorInfoInterDevice_DEVICE_TYPE_NORDIC:t = DeviceType::Nordic;
+                    break;
+                  case SensorInfoInterDevice_DEVICE_TYPE_HUB:t = DeviceType::Hub;
+                    break;
+                  case SensorInfoInterDevice_DEVICE_TYPE_TI:t = DeviceType::TI;
+                    break;
+                }
+                devices.emplace_back(std::tuple(address, t));
+              }
+              getSensorData->setDevices(devices);
+              for (int i = 0; i < values->values_count; i++) {
+                DeviceType t;
+
+                switch (values->values[i].device_type) {
+                  case ValuesInterDevice_DEVICE_TYPE_CUSTOM:t = DeviceType::Custom;
+                    break;
+                  case ValuesInterDevice_DEVICE_TYPE_NORDIC:t = DeviceType::Nordic;
+                    break;
+                  case ValuesInterDevice_DEVICE_TYPE_HUB:t = DeviceType::Hub;
+                    break;
+                  case ValuesInterDevice_DEVICE_TYPE_TI:t = DeviceType::TI;
+                    break;
+                }
+
+
+                bool shouldSend = false;
+                SensorDataStore store;
+
+                sensorDataMutex.lock();
+                auto it = sensorData.find(values->values[i].address);
+                if (it != sensorData.end()) {
+                  store = SensorDataStore{
+                      .timestamp = values->values[i].timestamp,
+                      .address = values->values[i].address,
+                      .type = t,
+                      .value = values->values[i].value,
+                  };
+                  // replace if found timestamp is less than sent timestamp
+                  if (it->second.timestamp < values->values[i].timestamp) {
+                    sensorData.insert_or_assign(it->first, store);
+                    shouldSend = true;
+                  }
+                } else {
+                  Serial.printf("it->first=%s\n",values->values[i].address);
+                  store = SensorDataStore{
+                      .timestamp = values->values[i].timestamp,
+                      .address = values->values[i].address,
+                      .type = t,
+                      .value = values->values[i].value,
+                  };
+                  sensorData.insert_or_assign(values->values[i].address, store);
+
+                  shouldSend = true;
+                }
+                Serial.printf("\nNew Data: \n  -  %s: %f, %d\n",
+                              values->values[i].address,
+                              values->values[i].value,
+                              values->values[i].device_type);
+                sensorDataMutex.unlock();
+                if(shouldSend) {
+                  SendData(values->values[i].address,store);
+                }
+              }
               break;
             }
             default: {

@@ -24,6 +24,7 @@
 #include "BLEUtils.h"
 #include "setClock.h"
 #include "HTTPSend.h"
+#include "esp32/rom/rtc.h"
 
 using namespace std;
 
@@ -96,7 +97,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 vector<uint8_t> getData(NimBLECharacteristic *pRead, NimBLECharacteristic *pWrite);
 WebData::WebDataPollingClient *dataFromServerClient;
 CharacteristicCallback *c_callback;
-GetSensorData *sensorData;
+GetSensorData *getSensorData;
 
 void loop1();
 void clientConnectLoop();
@@ -156,7 +157,7 @@ void recData(BackendToFirmwarePacket packet) {
       }
       std::map<string, string> headers;
       headers.emplace("Board", uuid);
-      std::string url = "/api/send-sensors";
+      std::string url = "/api/v1/send-sensors";
       Serial.printf("buf size=%d\n", output.bytes_written);
       PostData(url, headers, buf, output.bytes_written);
       delete[] buf;
@@ -164,7 +165,7 @@ void recData(BackendToFirmwarePacket packet) {
     }
     case BackendToFirmwarePacket_clear_sensor_list_tag: {
 
-      sensorData->clearDevices();
+      getSensorData->clearDevices();
 
       break;
     }
@@ -182,10 +183,12 @@ void recData(BackendToFirmwarePacket packet) {
             break;
           case AddSensorInfo_DEVICE_TYPE_CUSTOM:deviceType = DeviceType::Custom;
             break;
+          case AddSensorInfo_DEVICE_TYPE_HUB:deviceType = DeviceType::Hub;
+            break;
         }
         newDevices.emplace_back(std::tuple(address, deviceType));
       }
-      sensorData->setDevices(newDevices);
+      getSensorData->setDevices(newDevices);
       break;
     }
     default: {
@@ -204,13 +207,12 @@ void outerLoop1(void *arg) {
 }
 void setup() {
   WiFiClass::mode(WIFI_STA);
-  sensorData = new GetSensorData();
+  getSensorData = new GetSensorData();
 
   Serial.begin(115200);
 
   Serial.println("Starting BLE work!");
   c_callback = new CharacteristicCallback();
-  NimBLEDevice::init("ESP32");
   Preferences preferences;
   preferences.begin("permanent", false);
   uuid = preferences.getString("uuid").c_str();
@@ -222,10 +224,14 @@ void setup() {
   }
   Serial.printf("uuid=%s\n", uuid.c_str());
   preferences.end();
+  std::string name = "ESP-" + uuid;
+  name.erase(15, std::string::npos);
+  Serial.printf("name=%s\n", name.c_str());
+  NimBLEDevice::init(name);
   NimBLEServer *pServer = BLEDevice::createServer();
   NimBLEService *pService = pServer->createService(SERVICE_UUID);
 
-  pRead = pService->createCharacteristic(CHARACTERISTIC_UUID,
+  pRead = pService->createCharacteristic(CHARACTERISTIC_SERVER_UUID,
                                          NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::INDICATE);
   pRead->setCallbacks(c_callback);
   pService->start();
@@ -242,33 +248,38 @@ void setup() {
   pServer->setCallbacks(pServerCallbacks);
 
   Serial.println("finished adding devices");
-  thread t([]() __attribute__((noreturn)) {
+  TaskHandle_t Task1;
+
+  xTaskCreate([](void *arg) {
     for (;;) {
       mtxBleIsInUse.lock();
       bool _bleIsInUse = bleIsInUse;
       mtxBleIsInUse.unlock();
       if (!_bleIsInUse) {
-        sensorData->loop();
+        getSensorData->loop();
       }
       delay(10'000);
 
     }
-  });
-  t.detach();
-  delay(100);
-  TaskHandle_t Task1;
+    vTaskDelete(nullptr);
+  }, "Sending Sensor Data", 16000, nullptr, 1, &Task1);
 
-  xTaskCreate(outerLoop1, "Main Loop Task", 16000, (void *) nullptr, 1, &Task1);
+  delay(100);
+  TaskHandle_t Task2;
+
+  xTaskCreate(outerLoop1, "Main Loop Task", 16000, nullptr, 1, &Task2);
 
   Serial.println("Characteristic defined! Now you can read it in your phone!");
 
 }
+
 void clientConnectLoop() {
   TaskHandle_t Task1;
   xTaskCreate([](void *parameters) {
     auto headersMap = std::map<string, string>();
     headersMap.emplace("Board", uuid.c_str());
-    string url = "/api/hub-connect";
+    string url = "/api/v1/hub-connect";
+
     WebData::WebDataPollingClient dataFromServerClient(url, headersMap);
     dataFromServerClient.onRecData(recData);
     for (;;) {
@@ -305,12 +316,14 @@ void loop1() {
     if (!_registerToken.empty()) {
       Serial.println("token register");
 
-      String url = ("http://fridgigator.herokuapp.com/api/register-hub?hub-uuid=");
-      url += (uuid.c_str());
-      TaskHandle_t Task1;
+      std::string url = ("http://fridgigator.herokuapp.com/api/v1/register-hub?hub-uuid=");
+      url += (uuid);
+      url = (url + "&addr=");
+      url = url + NimBLEDevice::getAddress().toString();
       HTTPClient http_client;
-      Serial.printf("url: %s\n", url.c_str());
-      bool begin = http_client.begin(url/*, rootCACertificate*/);
+      Serial.printf("url to send: %s\n", url.c_str());
+      String urlToSend = url.c_str();
+      bool begin = http_client.begin(urlToSend);
       Serial.printf("begin: %d \n", begin);
       http_client.addHeader("Authorization", _registerToken.c_str());
       log_d("Free internal heap before TLS %u", ESP.getFreeHeap());
@@ -358,7 +371,7 @@ void loop1() {
         status = WiFi.status();
         Serial.printf("status=%d\n", status);
 
-        Serial.printf("Trying to connect, key=%s, pass=%s", key.c_str(), pass.c_str());
+        Serial.printf("Trying to connect, key=%s, pass=", key.c_str());
         if (tryingToConnect == 1000) {
           Serial.println("Tried too long to connect. Restarting \n\n");
           esp_restart();
@@ -373,5 +386,6 @@ void loop1() {
   delay(100);
 
 }
+
 
 void loop() {}
