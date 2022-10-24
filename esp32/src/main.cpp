@@ -295,11 +295,13 @@ bool timeSet = false;
 int tryingToConnect = 0;
 bool isConnecting = false;
 
+bool wifiWasConnected = false;
 void loop1() {
-  Serial.printf("Wifi is connected: %d", WiFi.isConnected());
-
   if (WiFi.isConnected()) {
-    Serial.println("is connected");
+    if (!wifiWasConnected) {
+      wifiWasConnected = true;
+      Serial.println("WiFi is connected");
+    }
 
     if (!timeSet) {
       Serial.println("setting clock");
@@ -341,7 +343,10 @@ void loop1() {
     }
 
   } else {
-    Serial.println("WiFi is not connected");
+    if (wifiWasConnected) {
+      wifiWasConnected = false;
+      Serial.println("WiFi is not connected");
+    }
     Preferences preferences;
     mtxReadPrefs.lock();
     preferences.begin(WIFI_DATA_KEY, true);
@@ -356,7 +361,7 @@ void loop1() {
         mtxReadPrefs.lock();
         auto key = preferences.getString(WIFI_DATA_KEY_SSID);
         auto pass = preferences.getString(WIFI_DATA_KEY_PASSWORD);
-        Serial.printf("%s: %s\n", key.c_str(), pass.c_str());
+        Serial.printf("%s: secret \n", key.c_str());
 
         preferences.end();
         mtxReadPrefs.unlock();
@@ -386,6 +391,5 @@ void loop1() {
   delay(100);
 
 }
-
 
 void loop() {}

@@ -6,7 +6,7 @@
 #include "generated/packet.pb.h"
 #include "pb_encode.h"
 #include "DecodeException.h"
-
+#include "getTime.h"
 #include <mutex>
 
 static BLEUUID serviceNordicUUID("ef680200-9b35-4933-9b10-52ffa9740042");
@@ -31,17 +31,6 @@ std::mutex mtxGetBLEAddress;
 
 std::map<std::string, SensorDataStore> sensorData;
 std::mutex sensorDataMutex;
-
-unsigned long getTime() {
-  time_t now;
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    //Serial.println("Failed to obtain time");
-    return (0);
-  }
-  time(&now);
-  return now;
-}
 
 unsigned long lastGotData = 0;
 std::mutex lastGotDataMtx;
@@ -77,13 +66,16 @@ void notifyNordicCallback(
   lastGotDataMtx.unlock();
 
   sensorDataMutex.lock();
+  auto time = getTime();
+
   float temperature = std::stof(std::to_string(low) + "." + std::to_string(high));
   sensorData.insert_or_assign(remoteAddress, SensorDataStore{
-      .timestamp = getTime(),
+      .timestamp = time,
       .address = remoteAddress,
       .type = DeviceType::Nordic,
       .value = temperature,
   });
+
   sensorDataMutex.unlock();
 
   xTaskCreate([](void *arg) {
@@ -283,6 +275,7 @@ bool connectToServer(BLEAdvertisedDevice &device,
           auto name = iter.first;
           memcpy(&vList.values[i].address, name.c_str(), 21);
           auto value = iter.second;
+          Serial.printf("Time To Send=%lld\n",value.timestamp);
           vList.values[i].timestamp = value.timestamp;
           vList.values[i].value = value.value;
           switch (value.type) {
@@ -299,11 +292,13 @@ bool connectToServer(BLEAdvertisedDevice &device,
         }
 
       }
+
       p.type.crossDevicePacket = CrossDevicePacket{
           .has_sensorList = true,
           .sensorList = sList,
           .has_values = true,
           .values = vList,
+          .timestamp = getTime(),
       };
 
       auto buf = new pb_byte_t[2024];

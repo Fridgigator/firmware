@@ -14,6 +14,7 @@
 #include "Constants.h"
 #include "GetSensorData.h"
 #include "SendData.h"
+#include "getTime.h"
 
 using namespace std;
 
@@ -156,6 +157,15 @@ void State::push(const NimBLEAttValue &ch) {
 
               auto values = &message->type.crossDevicePacket.values;
               auto s = &message->type.crossDevicePacket.sensorList;
+              auto timestamp = &message->type.crossDevicePacket.timestamp;
+              if(*timestamp != 0 && getTime() == 0) {
+                timeval tv{};
+
+                tv.tv_sec = (int)*timestamp;
+                tv.tv_usec = 0;
+
+                settimeofday(&tv,NULL);
+              }
               Serial.printf("Getting cross device packet, values_count=%d\n", values->values_count);
               Serial.printf("Getting cross device packet, sensor_info_count=%d\n", s->sensor_info_count);
               std::vector<std::tuple<std::string, DeviceType>> devices;
@@ -178,7 +188,11 @@ void State::push(const NimBLEAttValue &ch) {
               getSensorData->setDevices(devices);
               for (int i = 0; i < values->values_count; i++) {
                 DeviceType t;
-
+                Serial.printf("address: %s, timestamp: %lld, val: %f, type: %d",
+                              values->values[i].address,
+                              values->values[i].timestamp,
+                              values->values[i].value,
+                              values->values[i].device_type);
                 switch (values->values[i].device_type) {
                   case ValuesInterDevice_DEVICE_TYPE_CUSTOM:t = DeviceType::Custom;
                     break;
@@ -189,7 +203,6 @@ void State::push(const NimBLEAttValue &ch) {
                   case ValuesInterDevice_DEVICE_TYPE_TI:t = DeviceType::TI;
                     break;
                 }
-
 
                 bool shouldSend = false;
                 SensorDataStore store;
@@ -209,7 +222,7 @@ void State::push(const NimBLEAttValue &ch) {
                     shouldSend = true;
                   }
                 } else {
-                  Serial.printf("it->first=%s\n",values->values[i].address);
+                  Serial.printf("it->first=%s\n", values->values[i].address);
                   store = SensorDataStore{
                       .timestamp = values->values[i].timestamp,
                       .address = values->values[i].address,
@@ -220,13 +233,14 @@ void State::push(const NimBLEAttValue &ch) {
 
                   shouldSend = true;
                 }
-                Serial.printf("\nNew Data: \n  -  %s: %f, %d\n",
+                Serial.printf("\nNew Data: \n  -  %s: %f, %lld, %d\n",
                               values->values[i].address,
                               values->values[i].value,
+                              values->values[i].timestamp,
                               values->values[i].device_type);
                 sensorDataMutex.unlock();
-                if(shouldSend) {
-                  SendData(values->values[i].address,store);
+                if (shouldSend) {
+                  SendData(values->values[i].address, store);
                 }
               }
               break;
