@@ -239,9 +239,6 @@ void State::push(const NimBLEAttValue &ch) {
                               values->values[i].timestamp,
                               values->values[i].device_type);
                 sensorDataMutex.unlock();
-                if (shouldSend) {
-                  SendData(values->values[i].address, store);
-                }
               }
               break;
             }

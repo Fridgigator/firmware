@@ -24,6 +24,7 @@
 #include "BLEUtils.h"
 #include "setClock.h"
 #include "HTTPSend.h"
+#include "SendData.h"
 #include "esp32/rom/rtc.h"
 
 using namespace std;
@@ -284,6 +285,12 @@ void clientConnectLoop() {
     dataFromServerClient.onRecData(recData);
     for (;;) {
       dataFromServerClient.poll();
+      sensorDataMutex.lock();
+      auto sensorDataCopy = sensorData;
+      sensorDataMutex.unlock();
+      for(const auto& data: sensorDataCopy){
+        SendData(data.first, data.second);
+      }
       delay(2000);
     }
   }, "Name", 32000, (void *) nullptr, 1, &Task1);

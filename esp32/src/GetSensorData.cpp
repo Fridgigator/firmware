@@ -77,20 +77,9 @@ void notifyNordicCallback(
   });
 
   sensorDataMutex.unlock();
-
-  xTaskCreate([](void *arg) {
-    auto [innerLow, innerHigh, innerRemoteAddress] = *(std::tuple<int, int, std::string> *) (arg);
-    Serial.printf("addr: %p\n", &innerLow);
-    Serial.printf("temperature (Nordic): %d.%d\n", innerLow, innerHigh);
-
-    PostData((std::string) ("/api/v1/send-data?data-type=temp&address=") + innerRemoteAddress + "&value="
-                 + std::to_string(innerLow) + "." + std::to_string(innerHigh),
-             std::map<std::string, std::string>(),
-             {},
-             0);
-    delete (std::tuple<int, int, std::string> *) (arg);
-    vTaskDelete(nullptr);
-  }, "Sending Sensor Data", 16000, (void *) sendTuple, 1, &Task1);
+  lastGotDataMtx.lock();
+  lastGotData = getTime();
+  lastGotDataMtx.unlock();
 
 }
 
@@ -119,25 +108,10 @@ void notifyTICallback(
   sensorDataMutex.unlock();
 
   Serial.printf("addr: %p\n", f);
-  TaskHandle_t Task1;
 
   lastGotDataMtx.lock();
   lastGotData = getTime();
   lastGotDataMtx.unlock();
-
-  auto *sendTuple = new std::tuple<float, std::string>(f, remoteAddress);
-  xTaskCreate([](void *arg) {
-    auto [fInner, innerRemoteAddress] = *(std::tuple<float, std::string> *) (arg);
-    Serial.printf("temperature (TI): %f\n", fInner);
-    std::string url =
-        ("/api/v1/send-data?data-type=temp&address=") + innerRemoteAddress + "&value=" + std::to_string(fInner);
-    Serial.printf("url: %s\n", url.c_str());
-
-    std::map<std::string, std::string> headers;
-    PostData(url, headers, {}, 0);
-    delete (std::tuple<float, std::string> *) (arg);
-    vTaskDelete(nullptr);
-  }, "Sending Sensor Data", 16000, (void *) sendTuple, 1, &Task1);
 }
 
 bool connectToServer(BLEAdvertisedDevice &device,
