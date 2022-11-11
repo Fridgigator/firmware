@@ -4,7 +4,6 @@
 #include <deque>
 #include <string>
 #include <esp_bt_device.h>
-#include <mutex>
 
 #include "DeviceType.h"
 #include "NimBLEDevice.h"

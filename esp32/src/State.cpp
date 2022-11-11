@@ -6,7 +6,6 @@
 #include <memory>
 #include <WiFi.h>
 #include <thread>
-#include <mutex>
 #include <Preferences.h>
 #include <cstring>
 #include "WiFiState.h"
@@ -21,17 +20,10 @@ using namespace std;
 void printVec(optional<vector<uint8_t>> val);
 void printDeque(deque<uint8_t> &val);
 
-mutex mtxWifi;
-WiFiState wifiState;
+safe_std::mutex<WiFiState> wifiState;
 
-State::State() {
-  currentState = nullptr;
-  type = Initial;
-}
-struct StateParser {
-  NimBLEAttValue *ch;
-  State *t;
-};
+State::State() : currentState(nullptr), type(Initial) {}
+
 void State::push(const NimBLEAttValue &ch) {
   deque<uint8_t> dequeValue;
   const uint8_t *rawChPointer = ch.data();
@@ -106,24 +98,22 @@ void State::push(const NimBLEAttValue &ch) {
               WiFiClass::mode(WIFI_STA);
               WiFi.begin(wifiConnectInfo->ssid, wifiConnectInfo->password);
               Serial.print("Connecting to WiFi ..\n");
-              mtxWifi.lock();
-              wifiState = CONNECTING;
-              mtxWifi.unlock();
+              wifiState.lockAndSwap(CONNECTING);
               std::thread th([wifiConnectInfo = move(wifiConnectInfo)]() {
                 for (int i = 0; i < 5; i++) {
                   if (WiFi.isConnected()) {
 
-                    mtxWifi.lock();
-                    wifiState = CONNECTED;
-                    mtxWifi.unlock();
-                    Preferences preferences;
-                    mtxReadPrefs.lock();
-                    preferences.begin(WIFI_DATA_KEY);
-                    preferences.putString(WIFI_DATA_KEY_PASSWORD, wifiConnectInfo->password);
-                    preferences.putString(WIFI_DATA_KEY_SSID, wifiConnectInfo->ssid);
 
-                    preferences.end();
-                    mtxReadPrefs.unlock();
+                    wifiState.lockAndSwap(CONNECTED);
+
+                    Preferences preferences;
+                    {
+                      auto lock = mtxReadPrefs.lock();
+                      preferences.begin(WIFI_DATA_KEY);
+                      preferences.putString(WIFI_DATA_KEY_PASSWORD, wifiConnectInfo->password);
+                      preferences.putString(WIFI_DATA_KEY_SSID, wifiConnectInfo->ssid);
+                      preferences.end();
+                    }
                     isConnecting = false;
                     return;
 
@@ -131,9 +121,7 @@ void State::push(const NimBLEAttValue &ch) {
                   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                 }
                 Serial.println("Timeout");
-                mtxWifi.lock();
-                wifiState = TIMEOUT;
-                mtxWifi.unlock();
+                wifiState.lockAndSwap(TIMEOUT);
               });
               th.detach();
               type = Initial;
@@ -148,9 +136,7 @@ void State::push(const NimBLEAttValue &ch) {
               Serial.print("nonce=");
               Serial.println(nonce.c_str());
               // I have to do this because I'm low on stack space
-              mtxRegisterToken.lock();
-              registerToken = nonce;
-              mtxRegisterToken.unlock();
+              registerToken.lockAndSwap(std::move(nonce));
               break;
             }
             case BLESendPacket_crossDevicePacket_tag : {
@@ -158,13 +144,13 @@ void State::push(const NimBLEAttValue &ch) {
               auto values = &message->type.crossDevicePacket.values;
               auto s = &message->type.crossDevicePacket.sensorList;
               auto timestamp = &message->type.crossDevicePacket.timestamp;
-              if(*timestamp != 0 && getTime() == 0) {
+              if (*timestamp != 0 && getTime() == 0) {
                 timeval tv{};
 
-                tv.tv_sec = (int)*timestamp;
+                tv.tv_sec = (int) *timestamp;
                 tv.tv_usec = 0;
 
-                settimeofday(&tv,NULL);
+                settimeofday(&tv, NULL);
               }
               Serial.printf("Getting cross device packet, values_count=%d\n", values->values_count);
               Serial.printf("Getting cross device packet, sensor_info_count=%d\n", s->sensor_info_count);
@@ -206,39 +192,39 @@ void State::push(const NimBLEAttValue &ch) {
 
                 bool shouldSend = false;
                 SensorDataStore store;
+                {
+                  auto _sensorData = sensorData.lock();
+                  auto it = _sensorData->find(values->values[i].address);
+                  if (it != _sensorData->end()) {
+                    store = SensorDataStore{
+                        .timestamp = values->values[i].timestamp,
+                        .address = values->values[i].address,
+                        .type = t,
+                        .value = values->values[i].value,
+                    };
+                    // replace if found timestamp is less than sent timestamp
+                    if (it->second.timestamp < values->values[i].timestamp) {
+                      _sensorData->insert_or_assign(it->first, store);
+                      shouldSend = true;
+                    }
+                  } else {
+                    Serial.printf("it->first=%s\n", values->values[i].address);
+                    store = SensorDataStore{
+                        .timestamp = values->values[i].timestamp,
+                        .address = values->values[i].address,
+                        .type = t,
+                        .value = values->values[i].value,
+                    };
+                    _sensorData->insert_or_assign(values->values[i].address, store);
 
-                sensorDataMutex.lock();
-                auto it = sensorData.find(values->values[i].address);
-                if (it != sensorData.end()) {
-                  store = SensorDataStore{
-                      .timestamp = values->values[i].timestamp,
-                      .address = values->values[i].address,
-                      .type = t,
-                      .value = values->values[i].value,
-                  };
-                  // replace if found timestamp is less than sent timestamp
-                  if (it->second.timestamp < values->values[i].timestamp) {
-                    sensorData.insert_or_assign(it->first, store);
                     shouldSend = true;
                   }
-                } else {
-                  Serial.printf("it->first=%s\n", values->values[i].address);
-                  store = SensorDataStore{
-                      .timestamp = values->values[i].timestamp,
-                      .address = values->values[i].address,
-                      .type = t,
-                      .value = values->values[i].value,
-                  };
-                  sensorData.insert_or_assign(values->values[i].address, store);
-
-                  shouldSend = true;
+                  Serial.printf("\nNew Data: \n  -  %s: %f, %lld, %d\n",
+                                values->values[i].address,
+                                values->values[i].value,
+                                values->values[i].timestamp,
+                                values->values[i].device_type);
                 }
-                Serial.printf("\nNew Data: \n  -  %s: %f, %lld, %d\n",
-                              values->values[i].address,
-                              values->values[i].value,
-                              values->values[i].timestamp,
-                              values->values[i].device_type);
-                sensorDataMutex.unlock();
               }
               break;
             }
@@ -323,9 +309,11 @@ vector<uint8_t> State::getPacket() {
 
     }
     case ConnectingToWiFiStateSendSize: {
-      mtxWifi.lock();
-      auto wifiLocalState = wifiState;
-      mtxWifi.unlock();
+      WiFiState wifiLocalState;
+      {
+        auto lock = wifiState.lock();
+        wifiLocalState = *lock;
+      }
       auto nextState = GetWiFiStateSizeClass(wifiLocalState);
       type = ConnectingToWiFiState;
       currentState = {nextState};

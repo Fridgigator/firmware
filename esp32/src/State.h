@@ -16,7 +16,7 @@ class State {
                GetCommandClass,
                SendWifiDataClass,
                GetWifiUsernamePasswordClass,
-               GetWiFiStateSizeClass> currentState;
+               GetWiFiStateSizeClass> currentState{};
  public:
   State();
 

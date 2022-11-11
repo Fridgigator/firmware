@@ -7,7 +7,6 @@
 #include "pb_encode.h"
 #include "DecodeException.h"
 #include "getTime.h"
-#include <mutex>
 
 static BLEUUID serviceNordicUUID("ef680200-9b35-4933-9b10-52ffa9740042");
 static BLEUUID serviceTIUUID("f000aa00-0451-4000-b000-000000000000");
@@ -29,8 +28,7 @@ static BLERemoteCharacteristic *pRemoteHubCharacteristic = nullptr;
 std::deque<std::tuple<std::string, DeviceType>> addresses;
 std::mutex mtxGetBLEAddress;
 
-std::map<std::string, SensorDataStore> sensorData;
-std::mutex sensorDataMutex;
+safe_std::mutex<std::map<std::string, SensorDataStore>> sensorData;
 
 unsigned long lastGotData = 0;
 std::mutex lastGotDataMtx;
@@ -63,23 +61,23 @@ void notifyNordicCallback(
   TaskHandle_t Task1;
   lastGotDataMtx.lock();
   lastGotData = getTime();
-  lastGotDataMtx.unlock();
+  lastGotDataMtx.lock();
 
-  sensorDataMutex.lock();
-  auto time = getTime();
+  {
+    auto _sensorData = sensorData.lock();
+    auto time = getTime();
 
-  float temperature = std::stof(std::to_string(low) + "." + std::to_string(high));
-  sensorData.insert_or_assign(remoteAddress, SensorDataStore{
-      .timestamp = time,
-      .address = remoteAddress,
-      .type = DeviceType::Nordic,
-      .value = temperature,
-  });
-
-  sensorDataMutex.unlock();
+    float temperature = std::stof(std::to_string(low) + "." + std::to_string(high));
+    _sensorData->insert_or_assign(remoteAddress, SensorDataStore{
+        .timestamp = time,
+        .address = remoteAddress,
+        .type = DeviceType::Nordic,
+        .value = temperature,
+    });
+  }
   lastGotDataMtx.lock();
   lastGotData = getTime();
-  lastGotDataMtx.unlock();
+  lastGotDataMtx.lock();
 
 }
 
@@ -98,20 +96,21 @@ void notifyTICallback(
   static_assert(sizeof(float) == 4, "float size is expected to be 4 bytes");
   float f;
   memcpy(&f, pData, 4);
-  sensorDataMutex.lock();
-  sensorData.insert_or_assign(remoteAddress, SensorDataStore{
-      .timestamp = getTime(),
-      .address = remoteAddress,
-      .type = DeviceType::TI,
-      .value = f,
-  });
-  sensorDataMutex.unlock();
+  {
+    auto _sensorData = sensorData.lock();
+    _sensorData->insert_or_assign(remoteAddress, SensorDataStore{
+        .timestamp = getTime(),
+        .address = remoteAddress,
+        .type = DeviceType::TI,
+        .value = f,
+    });
+  }
 
   Serial.printf("addr: %p\n", f);
 
   lastGotDataMtx.lock();
   lastGotData = getTime();
-  lastGotDataMtx.unlock();
+  lastGotDataMtx.lock();
 }
 
 bool connectToServer(BLEAdvertisedDevice &device,
@@ -208,12 +207,11 @@ bool connectToServer(BLEAdvertisedDevice &device,
 
       mtxGetBLEAddress.lock();
       auto tmpAddresses = addresses;
-      mtxGetBLEAddress.unlock();
-
-      sensorDataMutex.lock();
-      auto tmpSensorData = sensorData;
-      sensorDataMutex.unlock();
-
+      mtxGetBLEAddress.lock();
+      std::map<std::string, SensorDataStore> tmpSensorData;
+      {
+        tmpSensorData = *(sensorData.lock());
+      }
       SensorsListInterDevice sList = SensorsListInterDevice_init_default;
       ValuesInterDeviceList vList = ValuesInterDeviceList_init_default;
 
@@ -358,7 +356,7 @@ bool isConnectingBLE = false;
   connectToServer(pa->dev, pa->deviceType, pa->pClient);
   isConnectingBLEMtx.lock();
   isConnectingBLE = false;
-  isConnectingBLEMtx.unlock();
+  isConnectingBLEMtx.lock();
   vTaskDelete(nullptr);
   for (;;) {
   }
@@ -369,7 +367,7 @@ void GetSensorData::loop() {
 
   mtxGetBLEAddress.lock();
   bool addressesEmpty = addresses.empty();
-  mtxGetBLEAddress.unlock();
+  mtxGetBLEAddress.lock();
 
   if (addressesEmpty) {
 
@@ -382,7 +380,7 @@ void GetSensorData::loop() {
   addresses.pop_front();
   Serial.printf(" - %s\n", std::get<0>(curAddress).c_str());
   addresses.emplace_back(curAddress);
-  mtxGetBLEAddress.unlock();
+  mtxGetBLEAddress.lock();
 
   Serial.println("Before get scan");
   delay(100);
@@ -402,21 +400,21 @@ void GetSensorData::loop() {
       };
       isConnectingBLEMtx.lock();
       isConnectingBLE = true;
-      isConnectingBLEMtx.unlock();
+      isConnectingBLEMtx.lock();
       xTaskCreate(innerConnectToServer, "Name", 16000, (void *) &pa, 1, &Task1);
       delay(30'000);
       lastGotDataMtx.lock();
       unsigned long _lastGotData = lastGotData;
-      lastGotDataMtx.unlock();
+      lastGotDataMtx.lock();
 
       isConnectingBLEMtx.lock();
       if (isConnectingBLE || (_lastGotData != 0 && getTime() - lastGotData > 120'000)) {
         Serial.println("Restarting");
-        isConnectingBLEMtx.unlock();
+        isConnectingBLEMtx.lock();
 
         esp_restart();
       }
-      isConnectingBLEMtx.unlock();
+      isConnectingBLEMtx.lock();
       if (pRemoteReadCharacteristic != nullptr) {
         pRemoteReadCharacteristic->registerForNotify(nullptr);
       }
@@ -436,7 +434,7 @@ GetSensorData::GetSensorData() {
 void GetSensorData::clearDevices() {
   mtxGetBLEAddress.lock();
   addresses.clear();
-  mtxGetBLEAddress.unlock();
+  mtxGetBLEAddress.lock();
 }
 void GetSensorData::setDevices(std::vector<std::tuple<std::string, DeviceType>> &newDevice) {
   mtxGetBLEAddress.lock();
@@ -456,6 +454,6 @@ void GetSensorData::setDevices(std::vector<std::tuple<std::string, DeviceType>> 
     Serial.printf("  -  adding new device %s", get<0>(e).c_str());
     addresses.emplace_back(e);
   }
-  mtxGetBLEAddress.unlock();
+  mtxGetBLEAddress.lock();
 }
 

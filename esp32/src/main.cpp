@@ -3,7 +3,6 @@
 #include "WiFi.h"
 #include <vector>
 #include <queue>
-#include <mutex>
 #include <cstring>
 #include <Preferences.h>
 #include <HTTPClient.h>
@@ -26,71 +25,58 @@
 #include "HTTPSend.h"
 #include "SendData.h"
 #include "esp32/rom/rtc.h"
+#include <memory>
 
 using namespace std;
 
 NimBLECharacteristic *pRead = nullptr;
-mutex mtxState;
-mutex mtxReadPrefs;
+safe_std::mutex<bool> mtxReadPrefs;
 
-mutex mtxRegisterToken;
-string registerToken;
+safe_std::mutex<std::string> registerToken;
 
-mutex mtxBleIsInUse;
-bool bleIsInUse = false;
+safe_std::mutex<bool> bleIsInUse;
+safe_std::mutex<State*> state;
 
-State *s;
 
 class CharacteristicCallback : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *ch) override {
-    if (s != nullptr) {
-      mtxState.lock();
-
+    auto s = state.lock();
+    if (*s != nullptr) {
       auto val = ch->getValue();
-      s->push(val);
-      mtxState.unlock();
+      (*s)->push(val);
     } else {
       Serial.println("nullptr get");
       throw StateException();
-
     }
   }
 
   void onRead(NimBLECharacteristic *ch) override {
-    if (s != nullptr) {
-      mtxState.lock();
-
-      ch->setValue(s->getPacket());
+    auto s = state.lock();
+    if (*s != nullptr) {
+      ch->setValue((*s)->getPacket());
       ch->indicate();
-      mtxState.unlock();
     } else {
       Serial.println("nullptr set");
       throw StateException();
     }
-
   }
 };
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer) override {
-    mtxBleIsInUse.lock();
-    bleIsInUse = true;
-    mtxBleIsInUse.unlock();
-    mtxState.lock();
-    delete s;
-    s = new State();
-    mtxState.unlock();
+    bleIsInUse.lockAndSwap(true);
+
+    State* oldState = state.lockAndSwap(new State);
+    delete oldState;
+
 
   }
 
   void onDisconnect(NimBLEServer *pServer) override {
-    mtxState.lock();
+    auto* s = state.lockAndSwap(new State);
     delete s;
-    s = nullptr;
-    mtxState.unlock();
-    mtxBleIsInUse.lock();
-    bleIsInUse = false;
-    mtxBleIsInUse.unlock();
+
+    bleIsInUse.lockAndSwap(false);
   }
 
 };
@@ -187,7 +173,7 @@ void recData(BackendToFirmwarePacket packet) {
           case AddSensorInfo_DEVICE_TYPE_HUB:deviceType = DeviceType::Hub;
             break;
         }
-        newDevices.emplace_back(std::tuple(address, deviceType));
+        newDevices.emplace_back(std::tuple<std::string, DeviceType>(address, deviceType));
       }
       getSensorData->setDevices(newDevices);
       break;
@@ -253,9 +239,11 @@ void setup() {
 
   xTaskCreate([](void *arg) {
     for (;;) {
-      mtxBleIsInUse.lock();
-      bool _bleIsInUse = bleIsInUse;
-      mtxBleIsInUse.unlock();
+      bool _bleIsInUse;
+      {
+        auto lock = bleIsInUse.lock();
+         _bleIsInUse = *lock;
+      }
       if (!_bleIsInUse) {
         getSensorData->loop();
       }
@@ -285,9 +273,11 @@ void clientConnectLoop() {
     dataFromServerClient.onRecData(recData);
     for (;;) {
       dataFromServerClient.poll();
-      sensorDataMutex.lock();
-      auto sensorDataCopy = sensorData;
-      sensorDataMutex.unlock();
+      std::map<basic_string<char>, SensorDataStore> sensorDataCopy;
+      {
+        auto _sensorData = sensorData.lock();
+        sensorDataCopy = *_sensorData;
+      }
       for(const auto& data: sensorDataCopy){
         SendData(data.first, data.second);
       }
@@ -317,10 +307,12 @@ void loop1() {
 
       timeSet = true;
     }
-    mtxRegisterToken.lock();
-    auto _registerToken = registerToken;
-    registerToken = "";
-    mtxRegisterToken.unlock();
+
+    std::string _registerToken;
+    {
+      _registerToken = registerToken.lockAndSwap("");
+    }
+
 
     if (!_registerToken.empty()) {
       Serial.println("token register");
@@ -355,23 +347,28 @@ void loop1() {
       Serial.println("WiFi is not connected");
     }
     Preferences preferences;
-    mtxReadPrefs.lock();
-    preferences.begin(WIFI_DATA_KEY, true);
-    bool hasKey = preferences.isKey(WIFI_DATA_KEY_SSID) && preferences.isKey(WIFI_DATA_KEY_PASSWORD);
-    preferences.end();
-    mtxReadPrefs.unlock();
+    bool hasKey;
+    {
+      auto lock = mtxReadPrefs.lock();
+      preferences.begin(WIFI_DATA_KEY, true);
+      hasKey = preferences.isKey(WIFI_DATA_KEY_SSID) && preferences.isKey(WIFI_DATA_KEY_PASSWORD);
+      preferences.end();
+    }
     Serial.printf("has key=%d\n", hasKey);
 
     if (hasKey) {
       while (!WiFi.isConnected() && !isConnecting) {
         preferences.begin(WIFI_DATA_KEY, true);
-        mtxReadPrefs.lock();
-        auto key = preferences.getString(WIFI_DATA_KEY_SSID);
-        auto pass = preferences.getString(WIFI_DATA_KEY_PASSWORD);
-        Serial.printf("%s: secret \n", key.c_str());
+        std::string key;
+        std::string pass;
+        {
+          auto lock = mtxReadPrefs.lock();
+          key = preferences.getString(WIFI_DATA_KEY_SSID).c_str();
+          pass = preferences.getString(WIFI_DATA_KEY_PASSWORD).c_str();
+          Serial.printf("%s: secret \n", key.c_str());
 
-        preferences.end();
-        mtxReadPrefs.unlock();
+          preferences.end();
+        }
 
         wl_status_t status = WiFi.status();
         Serial.printf("status=%d\n", status);
