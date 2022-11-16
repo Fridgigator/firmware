@@ -187,20 +187,20 @@ void State::push(const NimBLEAttValue &ch) {
               }
               getSensorData->setDevices(devices);
               for (int i = 0; i < values->values_count; i++) {
-                DeviceType t;
+                DeviceType device_type;
                 Serial.printf("address: %s, timestamp: %lld, val: %f, type: %d",
                               values->values[i].address,
                               values->values[i].timestamp,
                               values->values[i].value,
                               values->values[i].device_type);
                 switch (values->values[i].device_type) {
-                  case ValuesInterDevice_DEVICE_TYPE_CUSTOM:t = DeviceType::Custom;
+                  case ValuesInterDevice_DEVICE_TYPE_CUSTOM:device_type = DeviceType::Custom;
                     break;
-                  case ValuesInterDevice_DEVICE_TYPE_NORDIC:t = DeviceType::Nordic;
+                  case ValuesInterDevice_DEVICE_TYPE_NORDIC:device_type = DeviceType::Nordic;
                     break;
-                  case ValuesInterDevice_DEVICE_TYPE_HUB:t = DeviceType::Hub;
+                  case ValuesInterDevice_DEVICE_TYPE_HUB:device_type = DeviceType::Hub;
                     break;
-                  case ValuesInterDevice_DEVICE_TYPE_TI:t = DeviceType::TI;
+                  case ValuesInterDevice_DEVICE_TYPE_TI:device_type = DeviceType::TI;
                     break;
                 }
 
@@ -208,13 +208,22 @@ void State::push(const NimBLEAttValue &ch) {
                 SensorDataStore store;
 
                 sensorDataMutex.lock();
-                auto it = sensorData.find(values->values[i].address);
+
+                MeasureType measure_type;
+                switch(values->values[i].measure_type){
+                  case ValuesInterDevice_MEASURE_TYPE_HUMIDITY: measure_type = MeasureType::HUMIDITY; break;
+                  case ValuesInterDevice_MEASURE_TYPE_TEMP: measure_type = MeasureType::TEMP; break;
+                  default:
+                    throw "unreachable";
+                }
+                auto it = sensorData.find(values->values[i].address+to_string(device_type));
                 if (it != sensorData.end()) {
                   store = SensorDataStore{
                       .timestamp = values->values[i].timestamp,
                       .address = values->values[i].address,
-                      .type = t,
+                      .type = device_type,
                       .value = values->values[i].value,
+                      .measure_type =measure_type,
                   };
                   // replace if found timestamp is less than sent timestamp
                   if (it->second.timestamp < values->values[i].timestamp) {
@@ -226,17 +235,19 @@ void State::push(const NimBLEAttValue &ch) {
                   store = SensorDataStore{
                       .timestamp = values->values[i].timestamp,
                       .address = values->values[i].address,
-                      .type = t,
+                      .type = device_type,
                       .value = values->values[i].value,
+                      .measure_type =measure_type,
                   };
                   sensorData.insert_or_assign(values->values[i].address, store);
 
                   shouldSend = true;
                 }
-                Serial.printf("\nNew Data: \n  -  %s: %f, %lld, %d\n",
+                Serial.printf("\nNew Data: \n  -  %s: %f, %lld, %d, %d\n",
                               values->values[i].address,
                               values->values[i].value,
                               values->values[i].timestamp,
+                              measure_type,
                               values->values[i].device_type);
                 sensorDataMutex.unlock();
               }

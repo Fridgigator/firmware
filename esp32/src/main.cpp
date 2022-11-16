@@ -289,7 +289,7 @@ void clientConnectLoop() {
       auto sensorDataCopy = sensorData;
       sensorDataMutex.unlock();
       for(const auto& data: sensorDataCopy){
-        SendData(data.first, data.second);
+        SendData(data.second.address, data.second);
       }
       delay(2000);
     }

@@ -9,12 +9,18 @@
 #include "getTime.h"
 #include <mutex>
 
+void nordicCallbackProcess(BLERemoteCharacteristic *pBLERemoteCharacteristic,
+                           const uint8_t *pData,
+                           size_t length,
+                           MeasureType type
+);
 static BLEUUID serviceNordicUUID("ef680200-9b35-4933-9b10-52ffa9740042");
 static BLEUUID serviceTIUUID("f000aa00-0451-4000-b000-000000000000");
 static BLEUUID serviceCustomUUID("00000000-0000-4000-0000-000000000000");
 static BLEUUID serviceHubUUID(SERVICE_UUID);
 
-static BLEUUID charNordicUUID("ef680201-9b35-4933-9b10-52ffa9740042");
+static BLEUUID charNordicTempUUID("ef680201-9b35-4933-9b10-52ffa9740042");
+static BLEUUID charNordicHumidityUUID("ef680203-9b35-4933-9b10-52ffa9740042");
 static BLEUUID charCustomUUID("00000000-0000-4000-0000-000000000000");
 static BLEUUID charTISendUUID("f000aa02-0451-4000-b000-000000000000");
 static BLEUUID charTIRecUUID("f000aa01-0451-4000-b000-000000000000");
@@ -23,7 +29,7 @@ static BLEUUID charHubUUID(CHARACTERISTIC_SERVER_UUID);
 
 static BLERemoteCharacteristic *pRemoteNordicCharacteristic = nullptr;
 static BLERemoteCharacteristic *pRemoteTIWriteCharacteristic = nullptr;
-static BLERemoteCharacteristic *pRemoteReadCharacteristic = nullptr;
+static unordered_map<MeasureType, BLERemoteCharacteristic *> pRemoteReadCharacteristics;
 static BLERemoteCharacteristic *pRemoteHubCharacteristic = nullptr;
 
 std::deque<std::tuple<std::string, DeviceType>> addresses;
@@ -45,20 +51,39 @@ bool contains(std::vector<T> &v, T key) {
   return false;
 }
 
-void notifyNordicCallback(
+void notifyNordicCallbackTemp(
     BLERemoteCharacteristic *pBLERemoteCharacteristic,
     const uint8_t *pData,
     size_t length,
     bool isNotify) {
-  Serial.print("Notify callback for characteristic ");
-  Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-  Serial.print(" of data length ");
-  Serial.println(length);
-  Serial.print("data: ");
+  nordicCallbackProcess(pBLERemoteCharacteristic,
+                        pData,
+                        length,
+                        MeasureType::TEMP
+  );
+}
+void notifyNordicCallbackHumidity(
+    BLERemoteCharacteristic *pBLERemoteCharacteristic,
+    const uint8_t *pData,
+    size_t length,
+    bool isNotify) {
+  nordicCallbackProcess(pBLERemoteCharacteristic,
+                        pData,
+                        length,
+                        MeasureType::HUMIDITY
+  );
+}
+void nordicCallbackProcess(BLERemoteCharacteristic *pBLERemoteCharacteristic,
+                           const uint8_t *pData,
+                           size_t length,
+                           MeasureType type
+) {
+  Serial.printf("Notify callback for characteristic %s of data length %d. data: %d.%d\n",pBLERemoteCharacteristic->getUUID().toString().c_str(), length, pData[1], pData[0]);
   int low = pData[0];
   int high = pData[1];
   std::string
-      remoteAddress = pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
+      remoteAddress =
+      pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
   auto *sendTuple = new std::tuple<int, int, std::string>(low, high, remoteAddress);
   TaskHandle_t Task1;
   lastGotDataMtx.lock();
@@ -69,11 +94,13 @@ void notifyNordicCallback(
   auto time = getTime();
 
   float temperature = std::stof(std::to_string(low) + "." + std::to_string(high));
-  sensorData.insert_or_assign(remoteAddress, SensorDataStore{
+  sensorData.insert_or_assign(remoteAddress + to_string(type), SensorDataStore{
       .timestamp = time,
       .address = remoteAddress,
       .type = DeviceType::Nordic,
       .value = temperature,
+      .measure_type = type,
+
   });
 
   sensorDataMutex.unlock();
@@ -91,7 +118,8 @@ void notifyTICallback(
   Serial.print("Notify callback for characteristic ");
   Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
   std::string
-      remoteAddress = pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
+      remoteAddress =
+      pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
   Serial.print(" of data length ");
   Serial.println(length);
   assert(length == 4);
@@ -99,11 +127,12 @@ void notifyTICallback(
   float f;
   memcpy(&f, pData, 4);
   sensorDataMutex.lock();
-  sensorData.insert_or_assign(remoteAddress, SensorDataStore{
+  sensorData.insert_or_assign(remoteAddress + to_string(MeasureType::TEMP), SensorDataStore{
       .timestamp = getTime(),
       .address = remoteAddress,
       .type = DeviceType::TI,
       .value = f,
+      .measure_type = MeasureType::TEMP,
   });
   sensorDataMutex.unlock();
 
@@ -164,7 +193,7 @@ bool connectToServer(BLEAdvertisedDevice &device,
     pRemoteTIWriteCharacteristic = pRemoteService->getCharacteristic(charTISendUUID);
 
     if (pRemoteTIWriteCharacteristic == nullptr) {
-      Serial.print("Failed to find our characteristic UUID: ");
+      Serial.print("Failed to find our characteristic UUID (TI) write: ");
       Serial.println(charTISendUUID.toString().c_str());
       pClient->disconnect();
       return false;
@@ -193,7 +222,7 @@ bool connectToServer(BLEAdvertisedDevice &device,
     pRemoteHubCharacteristic = pRemoteService->getCharacteristic(charHubUUID);
 
     if (pRemoteHubCharacteristic == nullptr) {
-      Serial.print("Failed to find our characteristic UUID: ");
+      Serial.print("Failed to find our characteristic UUID (hub): ");
       Serial.println(charHubUUID.toString().c_str());
       pClient->disconnect();
       return false;
@@ -218,7 +247,7 @@ bool connectToServer(BLEAdvertisedDevice &device,
       ValuesInterDeviceList vList = ValuesInterDeviceList_init_default;
 
       {
-        pb_size_t sizeOfSList = std::min(tmpAddresses.size(), 64u);
+        pb_size_t sizeOfSList = std::min(tmpAddresses.size(), static_cast<size_t>(64));
         sList.sensor_info_count = sizeOfSList;
 
         for (unsigned int i = 0; i < sizeOfSList; i++) {
@@ -239,19 +268,25 @@ bool connectToServer(BLEAdvertisedDevice &device,
         }
       }
       {
-        pb_size_t sizeOfVList = std::min(tmpSensorData.size(), 64u);
+        pb_size_t sizeOfVList = std::min(tmpSensorData.size(), static_cast<size_t>(64));
         vList.values_count = sizeOfVList;
         int i = 0;
         for (auto &iter : tmpSensorData) {
           if (i == sizeOfVList) {
             break;
           }
-          auto name = iter.first;
+          auto name = iter.second.address;
           memcpy(&vList.values[i].address, name.c_str(), 21);
           auto value = iter.second;
-          Serial.printf("Time To Send=%lld\n",value.timestamp);
+          Serial.printf("Time To Send=%lld\n", value.timestamp);
           vList.values[i].timestamp = value.timestamp;
           vList.values[i].value = value.value;
+          switch (value.measure_type) {
+            case TEMP:vList.values[i].measure_type = ValuesInterDevice_MEASURE_TYPE_TEMP;
+              break;
+            case HUMIDITY:vList.values[i].measure_type = ValuesInterDevice_MEASURE_TYPE_HUMIDITY;
+              break;
+          }
           switch (value.type) {
             case TI:vList.values[i].device_type = ValuesInterDevice_DEVICE_TYPE_TI;
               break;
@@ -302,44 +337,53 @@ bool connectToServer(BLEAdvertisedDevice &device,
       return false;
     }
   }
+  pRemoteReadCharacteristics[MeasureType::TEMP] = nullptr;
+  pRemoteReadCharacteristics[MeasureType::HUMIDITY] = nullptr;
+
   switch (deviceType) {
-    case TI:pRemoteReadCharacteristic = pRemoteService->getCharacteristic(charTIRecUUID);
+    case TI:pRemoteReadCharacteristics[MeasureType::TEMP] = pRemoteService->getCharacteristic(charTIRecUUID);
       break;
-    case Nordic:pRemoteReadCharacteristic = pRemoteService->getCharacteristic(charNordicUUID);
+    case Nordic: {
+      pRemoteReadCharacteristics[MeasureType::TEMP] = pRemoteService->getCharacteristic(charNordicTempUUID);
+      pRemoteReadCharacteristics[MeasureType::HUMIDITY] = pRemoteService->getCharacteristic(charNordicHumidityUUID);
       break;
-    case Custom:pRemoteReadCharacteristic = pRemoteService->getCharacteristic(charCustomUUID);
+    }
+    case Custom:pRemoteReadCharacteristics[MeasureType::TEMP] = pRemoteService->getCharacteristic(charCustomUUID);
       break;
-    case Hub:pRemoteReadCharacteristic = pRemoteService->getCharacteristic(charHubUUID);
+    case Hub:pRemoteReadCharacteristics[MeasureType::TEMP] = pRemoteService->getCharacteristic(charHubUUID);
       break;
     default:throw "What's it doing here";
   }
 
-  if (pRemoteReadCharacteristic == nullptr) {
-    Serial.print("Failed to find our characteristic UUID: ");
-    Serial.println(charTIRecUUID.toString().c_str());
-    pClient->disconnect();
-    return false;
-  }
-  Serial.printf(" - Found our service %s\n", pRemoteService->getUUID().toString().c_str());
-  Serial.printf(" - Found our characteristic %s\n", pRemoteReadCharacteristic->getUUID().toString().c_str());
+  for (const auto [type, pRemoteReadCharacteristic] : pRemoteReadCharacteristics) {
+    Serial.printf(" - Found our service %s for %d\n", pRemoteService->getUUID().toString().c_str(), deviceType);
+    Serial.printf(" - Type of measurement = %s\n", type == MeasureType::TEMP ? "TEMP" : "HUMIDITY");
+    if(pRemoteReadCharacteristic == nullptr){
+      Serial.printf("\033[0;31mNull pointer!!\033[0;30m\n");
+      continue;
+    }
+    Serial.printf(" - Found our characteristic %s\n", pRemoteReadCharacteristic->getUUID().toString().c_str());
 
-  Serial.printf("Can Write %d\n", pRemoteReadCharacteristic->canWrite());
-  Serial.printf("Can read %d\n", pRemoteReadCharacteristic->canRead());
-  Serial.printf("Can notify %d\n", pRemoteReadCharacteristic->canNotify());
-  Serial.printf("Can Indicate %d\n", pRemoteReadCharacteristic->canIndicate());
+    Serial.printf("Can Write %d\n", pRemoteReadCharacteristic->canWrite());
+    Serial.printf("Can read %d\n", pRemoteReadCharacteristic->canRead());
+    Serial.printf("Can notify %d\n", pRemoteReadCharacteristic->canNotify());
+    Serial.printf("Can Indicate %d\n", pRemoteReadCharacteristic->canIndicate());
 
-  if (pRemoteReadCharacteristic->canNotify()) {
-    switch (deviceType) {
+    if (pRemoteReadCharacteristic->canNotify()) {
+      switch (deviceType) {
 
-      case TI:Serial.println("TI");
-        pRemoteReadCharacteristic->registerForNotify(notifyTICallback);
-        break;
+        case TI:Serial.println("TI");
+          pRemoteReadCharacteristic->registerForNotify(notifyTICallback);
+          break;
 
-      case Nordic:Serial.println("Nordic");
-        pRemoteReadCharacteristic->registerForNotify(notifyNordicCallback);
-        break;
-      case Custom:break;
-      case Hub:break;
+        case Nordic:Serial.printf("Nordic: %s\n", type == MeasureType::HUMIDITY ? "Humidity" : "Temperature");
+
+          pRemoteReadCharacteristic->registerForNotify(
+              type == MeasureType::HUMIDITY ? notifyNordicCallbackHumidity : notifyNordicCallbackTemp);
+          break;
+        case Custom:break;
+        case Hub:break;
+      }
     }
   }
   return true;
@@ -356,6 +400,7 @@ bool isConnectingBLE = false;
 
   auto pa = (ParamArgs *) parameters;
   connectToServer(pa->dev, pa->deviceType, pa->pClient);
+  Serial.printf("Finished connecting to server\n");
   isConnectingBLEMtx.lock();
   isConnectingBLE = false;
   isConnectingBLEMtx.unlock();
@@ -391,6 +436,12 @@ void GetSensorData::loop() {
   auto scanResults = scanResultsClass.getScanResults();
 
   for (int i = 0; i < scanResults.getCount(); i++) {
+    for (const auto [type, pRemoteReadCharacteristic] : pRemoteReadCharacteristics) {
+      if (pRemoteReadCharacteristic != nullptr) {
+        pRemoteReadCharacteristic->unsubscribe();
+        pRemoteReadCharacteristic->registerForNotify(nullptr);
+      }
+    }
     auto dev = scanResults.getDevice(i);
     if (dev.getAddress().toString() == std::get<0>(curAddress)) {
       Serial.printf("Found %s - %d\n", dev.getName().c_str(), dev.getAddressType());
@@ -404,21 +455,25 @@ void GetSensorData::loop() {
       isConnectingBLE = true;
       isConnectingBLEMtx.unlock();
       xTaskCreate(innerConnectToServer, "Name", 16000, (void *) &pa, 1, &Task1);
-      delay(30'000);
+      delay(15'000);
       lastGotDataMtx.lock();
       unsigned long _lastGotData = lastGotData;
       lastGotDataMtx.unlock();
 
       isConnectingBLEMtx.lock();
-      if (isConnectingBLE || (_lastGotData != 0 && getTime() - lastGotData > 120'000)) {
-        Serial.println("Restarting");
+      if (isConnectingBLE || (_lastGotData != 0 && (getTime() - lastGotData) > 120'000)) {
+        Serial.printf("_lastGotData = %lu; getTime = %lld; lastGotData = %lu, \n", _lastGotData, getTime(), lastGotData);
+        Serial.println("\033[0;31mRestarting");
         isConnectingBLEMtx.unlock();
 
         esp_restart();
       }
       isConnectingBLEMtx.unlock();
-      if (pRemoteReadCharacteristic != nullptr) {
-        pRemoteReadCharacteristic->registerForNotify(nullptr);
+      for (const auto [type, pRemoteReadCharacteristic] : pRemoteReadCharacteristics) {
+        if (pRemoteReadCharacteristic != nullptr) {
+          pRemoteReadCharacteristic->unsubscribe();
+          pRemoteReadCharacteristic->registerForNotify(nullptr);
+        }
       }
       //vTaskDelete(Task1);
       //Task1 = nullptr;
