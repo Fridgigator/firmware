@@ -1,3 +1,5 @@
+#include <mutex>
+
 #include "GetSensorData.h"
 #include "BLEUtils.h"
 #include "HTTPSend.h"
@@ -7,17 +9,19 @@
 #include "pb_encode.h"
 #include "DecodeException.h"
 #include "getTime.h"
-#include <mutex>
 
 void nordicCallbackProcess(BLERemoteCharacteristic *pBLERemoteCharacteristic,
                            const uint8_t *pData,
                            size_t length,
                            MeasureType type
 );
-static BLEUUID serviceNordicUUID("ef680200-9b35-4933-9b10-52ffa9740042");
-static BLEUUID serviceTIUUID("f000aa00-0451-4000-b000-000000000000");
-static BLEUUID serviceCustomUUID("00000000-0000-4000-0000-000000000000");
-static BLEUUID serviceHubUUID(SERVICE_UUID);
+static std::vector<BLEUUID> serviceNordicUUIDs({BLEUUID("ef680200-9b35-4933-9b10-52ffa9740042"),
+                                                BLEUUID("ef680300-9b35-4933-9b10-52ffa9740042"),
+                                                BLEUUID("ef680400-9b35-4933-9b10-52ffa9740042"),
+                                                BLEUUID("ef680500-9b35-4933-9b10-52ffa9740042")});
+static std::vector<BLEUUID> serviceTIUUIDs({BLEUUID("f000aa00-0451-4000-b000-000000000000")});
+static std::vector<BLEUUID> serviceCustomUUIDs({BLEUUID("00000000-0000-4000-0000-000000000000")});
+static std::vector<BLEUUID> serviceHubUUIDs({BLEUUID(SERVICE_UUID)});
 
 static BLEUUID charNordicTempUUID("ef680201-9b35-4933-9b10-52ffa9740042");
 static BLEUUID charNordicHumidityUUID("ef680203-9b35-4933-9b10-52ffa9740042");
@@ -27,7 +31,6 @@ static BLEUUID charTIRecUUID("f000aa01-0451-4000-b000-000000000000");
 
 static BLEUUID charHubUUID(CHARACTERISTIC_SERVER_UUID);
 
-static BLERemoteCharacteristic *pRemoteNordicCharacteristic = nullptr;
 static BLERemoteCharacteristic *pRemoteTIWriteCharacteristic = nullptr;
 static unordered_map<MeasureType, BLERemoteCharacteristic *> pRemoteReadCharacteristics;
 static BLERemoteCharacteristic *pRemoteHubCharacteristic = nullptr;
@@ -78,7 +81,11 @@ void nordicCallbackProcess(BLERemoteCharacteristic *pBLERemoteCharacteristic,
                            size_t length,
                            MeasureType type
 ) {
-  Serial.printf("Notify callback for characteristic %s of data length %d. data: %d.%d\n",pBLERemoteCharacteristic->getUUID().toString().c_str(), length, pData[1], pData[0]);
+  Serial.printf("Notify callback for characteristic %s of data length %d. data: %d.%d\n",
+                pBLERemoteCharacteristic->getUUID().toString().c_str(),
+                length,
+                pData[1],
+                pData[0]);
   int low = pData[0];
   int high = pData[1];
   std::string
@@ -162,31 +169,48 @@ bool connectToServer(BLEAdvertisedDevice &device,
   delay(5000);
   Serial.printf(" - Connected to server: %d\n", res);
   Serial.printf(" - is Connected: %d\n", pClient->isConnected());
+  auto s = pClient->getServices();
+  Serial.printf("possible services length: %d\n",s->size());
+  for (auto const p: *s){
+    Serial.printf("possible services: %s\n",p->getUUID().toString().c_str());
+  }
   NimBLEDevice::setMTU(517); //set client to request maximum MTU from server (default is 23 otherwise)
 
   // Obtain a reference to the service we are after in the remote BLE server.
-  BLEUUID *UUID;
+  vector<BLEUUID> *vectorUUID;
   switch (deviceType) {
-    case TI:UUID = &serviceTIUUID;
+    case TI:vectorUUID = &serviceTIUUIDs;
       break;
-    case Nordic:UUID = &serviceNordicUUID;
+    case Nordic:vectorUUID = &serviceNordicUUIDs;
       break;
-    case Custom:UUID = &serviceCustomUUID;
+    case Custom:vectorUUID = &serviceCustomUUIDs;
       break;
-    case Hub:UUID = &serviceHubUUID;
+    case Hub:vectorUUID = &serviceHubUUIDs;
       break;
   }
-  BLERemoteService *pRemoteService = pClient->getService(*UUID);
-
-  if (pRemoteService == nullptr) {
-    Serial.print("Failed to find service UUID: ");
-    Serial.println(UUID->toString().c_str());
-    if (pClient->isConnected()) {
-      pClient->disconnect();
+  BLEUUID *UUID;
+  bool found = false;
+  BLERemoteService *pRemoteService = nullptr;
+  for (unsigned int i = 0; i < vectorUUID->size() && !found; i++) {
+    pRemoteService = pClient->getService(vectorUUID->at(i));
+    if (pRemoteService == nullptr) {
+      if (pClient->isConnected()) {
+        pClient->disconnect();
+      }
+    } else {
+      Serial.println(" - Found our service");
+      found = true;
     }
+  }
+  if (!found) {
+    Serial.printf("Failed to find service UUID\n");
     return false;
   }
-  Serial.println(" - Found our service");
+  if (pRemoteService == nullptr) {
+    Serial.printf("pRemoteService == nullptr\n");
+    return false;
+
+  }
 
   if (deviceType == DeviceType::TI) {
     // Obtain a reference to the characteristic in the service of the remote BLE server.
@@ -358,7 +382,7 @@ bool connectToServer(BLEAdvertisedDevice &device,
   for (const auto [type, pRemoteReadCharacteristic] : pRemoteReadCharacteristics) {
     Serial.printf(" - Found our service %s for %d\n", pRemoteService->getUUID().toString().c_str(), deviceType);
     Serial.printf(" - Type of measurement = %s\n", type == MeasureType::TEMP ? "TEMP" : "HUMIDITY");
-    if(pRemoteReadCharacteristic == nullptr){
+    if (pRemoteReadCharacteristic == nullptr) {
       Serial.printf("\033[0;31mNull pointer!!\033[0;30m\n");
       continue;
     }
@@ -462,7 +486,10 @@ void GetSensorData::loop() {
 
       isConnectingBLEMtx.lock();
       if (isConnectingBLE || (_lastGotData != 0 && (getTime() - lastGotData) > 120'000)) {
-        Serial.printf("_lastGotData = %lu; getTime = %lld; lastGotData = %lu, \n", _lastGotData, getTime(), lastGotData);
+        Serial.printf("_lastGotData = %lu; getTime = %lld; lastGotData = %lu, \n",
+                      _lastGotData,
+                      getTime(),
+                      lastGotData);
         Serial.println("\033[0;31mRestarting");
         isConnectingBLEMtx.unlock();
 
@@ -508,7 +535,7 @@ void GetSensorData::setDevices(std::vector<std::tuple<std::string, DeviceType>> 
   }
   addresses.clear();
   for (const auto &e : newVec) {
-    Serial.printf("  -  adding new device %s", get<0>(e).c_str());
+    Serial.printf("  -  adding new device %s\n", get<0>(e).c_str());
     addresses.emplace_back(e);
   }
   mtxGetBLEAddress.unlock();
