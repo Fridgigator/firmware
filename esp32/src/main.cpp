@@ -259,6 +259,18 @@ void setup() {
   xTaskCreate(outerLoop1, "Main Loop Task", 16000, nullptr, 1, &Task2);
 
   Serial.println("Characteristic defined! Now you can read it in your phone!");
+  TaskHandle_t Task3;
+
+  xTaskCreate([](void *arg) {
+    for (;;) {
+
+      delay(60'000*60);
+      Serial.println("Restarting on the hour");
+      BLEDevice::deinit(true);
+      esp_restart();
+    }
+    vTaskDelete(nullptr);
+  }, "Cycle BLE", 16000, nullptr, 1, &Task3);
 
 }
 
@@ -279,7 +291,7 @@ void clientConnectLoop() {
         sensorDataCopy = *_sensorData;
       }
       for(const auto& data: sensorDataCopy){
-        SendData(data.first, data.second);
+        SendData(data.second.address, data.second);
       }
       delay(2000);
     }
