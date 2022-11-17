@@ -26,7 +26,7 @@ TEST(MutexTest, EnsureLock) {
 }
 
 TEST(MutexTest, LockAndSwap) {
-  safe_std::mutex<int*> mux(new int(5));
+  safe_std::mutex<int *> mux(new int(5));
   std::vector<std::thread> v;
   for (int i = 0; i < 11; i++) {
     std::thread t([&mux]() {

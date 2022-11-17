@@ -6,11 +6,10 @@
 #include <cstring>
 #include <Preferences.h>
 #include <HTTPClient.h>
-#include <thread>
 #include <map>
 
-#include "StateException.h"
-#include "State.h"
+#include "exceptions/StateException.h"
+#include "state/State.h"
 #include "uuid.h"
 #include "WiFiStorage.h"
 #include "Constants.h"
@@ -19,13 +18,12 @@
 #include "pb_encode.h"
 #include "generated/FirmwareBackend.pb.h"
 #include "pb_decode.h"
-#include "DecodeException.h"
+#include "exceptions/DecodeException.h"
 #include "BLEUtils.h"
 #include "setClock.h"
 #include "HTTPSend.h"
 #include "SendData.h"
-#include "esp32/rom/rtc.h"
-#include <memory>
+#include "lib/log.h"
 
 using namespace std;
 
@@ -43,7 +41,8 @@ class CharacteristicCallback : public NimBLECharacteristicCallbacks {
     auto s = state.lock();
     if (*s != nullptr) {
       auto val = ch->getValue();
-      (*s)->push(val);
+      Reader r(&val);
+      (*s)->push(r);
     } else {
       Serial.println("nullptr get");
       throw StateException();
@@ -91,9 +90,10 @@ void clientConnectLoop();
 string uuid;
 
 void recData(BackendToFirmwarePacket packet) {
-
+  LOG("packet: %d\n",packet.which_type);
   switch (packet.which_type) {
     case BackendToFirmwarePacket_get_sensors_list_tag: {
+      LOG("GET_SENSORS_LIST\n");
       ScanResults scanResultsClass;
       auto res = scanResultsClass.getScanResults();
       vector<SensorInfo> sensorInfo;
@@ -151,16 +151,19 @@ void recData(BackendToFirmwarePacket packet) {
       break;
     }
     case BackendToFirmwarePacket_clear_sensor_list_tag: {
-
+      LOG("clear\n");
       getSensorData->clearDevices();
 
       break;
     }
     case BackendToFirmwarePacket_add_sensor_tag: {
+      LOG("ADDING SENSOR\n");
+      LOG("packet.type.add_sensor.add_sensor_info_count=%d\n", packet.type.add_sensor.add_sensor_info_count);
       vector<std::tuple<std::string, DeviceType>> newDevices;
       for (int i = 0; i < packet.type.add_sensor.add_sensor_info_count; i++) {
         auto addSensorInfo = packet.type.add_sensor.add_sensor_info[i];
         std::string address = addSensorInfo.sensor_info.address;
+        LOG("address=%s\n", packet.type.add_sensor.add_sensor_info[i].sensor_info.address);
         DeviceType deviceType;
         switch (addSensorInfo.device_type) {
           case AddSensorInfo_DEVICE_TYPE_TI:deviceType = DeviceType::TI;
@@ -173,15 +176,19 @@ void recData(BackendToFirmwarePacket packet) {
           case AddSensorInfo_DEVICE_TYPE_HUB:deviceType = DeviceType::Hub;
             break;
         }
+        LOG("deviceType=%d\n", deviceType);
         newDevices.emplace_back(std::tuple<std::string, DeviceType>(address, deviceType));
       }
+      LOG("setting devices\n");
       getSensorData->setDevices(newDevices);
       break;
     }
     default: {
+      LOG("default %d\n",BackendToFirmwarePacket_add_sensor_tag);
       break;
     }
   }
+  LOG("DONE: %d\n",BackendToFirmwarePacket_add_sensor_tag);
 }
 
 [[noreturn]]
@@ -241,13 +248,16 @@ void setup() {
     for (;;) {
       bool _bleIsInUse;
       {
+        LOG(" - about to lock isBLEInUse\n");
         auto lock = bleIsInUse.lock();
          _bleIsInUse = *lock;
+        LOG("isBLEInUse=%d\n",_bleIsInUse);
       }
       if (!_bleIsInUse) {
         getSensorData->loop();
       }
-      delay(10'000);
+      LOG(" - out of loop\n");
+      delay(1'000);
 
     }
     vTaskDelete(nullptr);

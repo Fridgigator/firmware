@@ -4,7 +4,7 @@
 #include "GetWiFiStateSizeClass.h"
 #include "generated/packet.pb.h"
 #include "pb_encode.h"
-#include "DecodeException.h"
+#include "exceptions/DecodeException.h"
 using namespace std;
 GetWiFiStateSizeClass::GetWiFiStateSizeClass(WiFiState wifi) {
   auto wifiResponsePacket = make_unique<WiFiConnectResponseInfo>();

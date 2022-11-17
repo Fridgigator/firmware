@@ -14,7 +14,7 @@ class mutex_guard {
 
  public:
   mutex_guard(mutex<T> *parent) noexcept;
-  ~mutex_guard() noexcept;
+  ~mutex_guard();
   T &operator*() noexcept;
   T* operator->() noexcept;
 };
@@ -24,7 +24,7 @@ mutex_guard<T>::mutex_guard(mutex<T> *parent) noexcept {
   _parent = parent;
 }
 template<class T>
-mutex_guard<T>::~mutex_guard() noexcept {
+mutex_guard<T>::~mutex_guard() {
   _parent->doneWithMutex();
   _parent = nullptr;
 }
@@ -45,9 +45,9 @@ class mutex {
   bool isBorrowed = false;
   std::mutex mtx;
  public:
-  mutex() noexcept;
+  mutex() = default;
 
-  mutex(T t) noexcept;
+  mutex(T t);
 
   mutex_guard<T> lock() noexcept;
   T lockAndSwap(T&& newVal) noexcept;
@@ -56,7 +56,7 @@ class mutex {
   friend class mutex_guard<T>;
 };
 template<class T>
-mutex<T>::mutex(T t) noexcept {
+mutex<T>::mutex(T t) {
   val = t;
 }
 
@@ -89,10 +89,6 @@ T mutex<T>::lockAndSwap(T&& newVal) noexcept {
   mtx.unlock();
   return oldVal;
 }
-
-template<class T>
-mutex<T>::mutex() noexcept = default;
-
 } // safe_std
 
 #endif //ESP32_SRC_MUTEX_H_

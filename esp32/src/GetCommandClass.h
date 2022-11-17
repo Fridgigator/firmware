@@ -1,7 +1,6 @@
 #ifndef ESP32_GETCOMMANDCLASS_H
 #define ESP32_GETCOMMANDCLASS_H
 
-#include <Arduino.h>
 #include <cstdint>
 #include <deque>
 #include <vector>

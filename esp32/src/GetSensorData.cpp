@@ -1,4 +1,5 @@
 #include <mutex>
+#include <unordered_map>
 
 #include "GetSensorData.h"
 #include "BLEUtils.h"
@@ -7,7 +8,7 @@
 #include "SensorDataStore.h"
 #include "generated/packet.pb.h"
 #include "pb_encode.h"
-#include "DecodeException.h"
+#include "exceptions/DecodeException.h"
 #include "getTime.h"
 
 void nordicCallbackProcess(BLERemoteCharacteristic *pBLERemoteCharacteristic,
@@ -35,12 +36,11 @@ static BLERemoteCharacteristic *pRemoteTIWriteCharacteristic = nullptr;
 static unordered_map<MeasureType, BLERemoteCharacteristic *> pRemoteReadCharacteristics;
 static BLERemoteCharacteristic *pRemoteHubCharacteristic = nullptr;
 
-std::deque<std::tuple<std::string, DeviceType>> addresses;
-std::mutex mtxGetBLEAddress;
+safe_std::mutex<std::deque<std::tuple<std::string, DeviceType>>> addresses;
 
 safe_std::mutex<std::map<std::string, SensorDataStore>> sensorData;
 
-safe_std::mutex<long long> lastGotData = 0;
+safe_std::mutex<unsigned long> lastGotData;
 
 template<typename T>
 bool contains(std::vector<T> &v, T key) {
@@ -87,8 +87,10 @@ void nordicCallbackProcess(BLERemoteCharacteristic *pBLERemoteCharacteristic,
   int low = pData[0];
   int high = pData[1];
   std::string
-      remoteAddress =
-      pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
+
+      remoteAddress = pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
+  auto *sendTuple = new std::tuple<int, int, std::string>(low, high, remoteAddress);
+  TaskHandle_t Task1;
 
   lastGotData.lockAndSwap(getTime());
 
@@ -256,9 +258,10 @@ bool connectToServer(BLEAdvertisedDevice &device,
       BLESendPacket p = BLESendPacket_init_zero;
       p.which_type = BLESendPacket_crossDevicePacket_tag;
 
-      mtxGetBLEAddress.lock();
-      auto tmpAddresses = addresses;
-      mtxGetBLEAddress.lock();
+      deque<tuple<std::string, DeviceType>> tmpAddresses;
+      {
+        tmpAddresses = *addresses.lock();
+      }
       std::map<std::string, SensorDataStore> tmpSensorData;
       {
         tmpSensorData = *(sensorData.lock());
@@ -413,17 +416,15 @@ struct ParamArgs {
   DeviceType deviceType;
   BLEClient *pClient;
 };
-std::mutex isConnectingBLEMtx;
-bool isConnectingBLE = false;
+
+safe_std::mutex<bool> isConnectingBLE = false;
 
 [[noreturn]] void innerConnectToServer(void *parameters) {
 
   auto pa = (ParamArgs *) parameters;
   connectToServer(pa->dev, pa->deviceType, pa->pClient);
   Serial.printf("Finished connecting to server\n");
-  isConnectingBLEMtx.lock();
-  isConnectingBLE = false;
-  isConnectingBLEMtx.lock();
+  isConnectingBLE.lockAndSwap(false);
   vTaskDelete(nullptr);
   for (;;) {
   }
@@ -432,9 +433,10 @@ bool isConnectingBLE = false;
 void GetSensorData::loop() {
   Serial.println("in loop\n\n\n\n\n\n");
 
-  mtxGetBLEAddress.lock();
-  bool addressesEmpty = addresses.empty();
-  mtxGetBLEAddress.lock();
+  bool addressesEmpty;
+  {
+    addressesEmpty = addresses.lock()->empty();
+  }
 
   if (addressesEmpty) {
 
@@ -442,12 +444,15 @@ void GetSensorData::loop() {
     return;
   }
 
-  mtxGetBLEAddress.lock();
-  auto curAddress = addresses.front();
-  addresses.pop_front();
+  tuple<string, DeviceType> curAddress;
+  {
+    auto lock = addresses.lock();
+    curAddress = lock->front();
+    lock->pop_front();
+  }
   Serial.printf(" - %s\n", std::get<0>(curAddress).c_str());
-  addresses.emplace_back(curAddress);
-  mtxGetBLEAddress.lock();
+  addresses.lock()->emplace_back(curAddress);
+
 
   Serial.println("Before get scan");
   delay(100);
@@ -471,52 +476,50 @@ void GetSensorData::loop() {
           .deviceType = std::get<1>(curAddress),
           .pClient = pClient,
       };
-      isConnectingBLEMtx.lock();
-      isConnectingBLE = true;
-      isConnectingBLEMtx.lock();
-      xTaskCreate(innerConnectToServer, "Name", 16000, (void *) &pa, 1, &Task1);
-      delay(15'000);
-      unsigned long _lastGotData = lastGotData.lockAndSwap(getTime());
 
-      if (isConnectingBLE || (_lastGotData != 0 && (getTime() - _lastGotData) > 120'000)) {
+      isConnectingBLE.lockAndSwap(true);
+
+      xTaskCreate(innerConnectToServer, "Name", 16000, (void *) &pa, 1, &Task1);
+
+      delay(30'000);
+      unsigned long _lastGotData;
+      {
+        _lastGotData = *lastGotData.lock();
+      }
+
+      if (*isConnectingBLE.lock() || (_lastGotData != 0 && getTime() - _lastGotData > 120'000)) {
         Serial.printf("_lastGotData = %lu; getTime = %lld; lastGotData = %lu, \n",
                       _lastGotData,
                       getTime(),
                       _lastGotData);
         Serial.println("\033[0;31mRestarting");
-        isConnectingBLEMtx.unlock();
 
         esp_restart();
       }
-      isConnectingBLEMtx.unlock();
-      for (const auto [type, pRemoteReadCharacteristic] : pRemoteReadCharacteristics) {
-        if (pRemoteReadCharacteristic != nullptr) {
-          pRemoteReadCharacteristic->unsubscribe();
-          pRemoteReadCharacteristic->registerForNotify(nullptr);
-        }
-      }
+
       //vTaskDelete(Task1);
       //Task1 = nullptr;
       if (pClient != nullptr && pClient->isConnected()) {
         Serial.print("disConnectingBLE\n");
         pClient->disconnect();
+        isConnectingBLE.lockAndSwap(false);
       }
     }
   }
-
+  isConnectingBLE.lockAndSwap(false);
 }
 GetSensorData::GetSensorData() {
   pClient = NimBLEDevice::createClient();
 }
 void GetSensorData::clearDevices() {
-  mtxGetBLEAddress.lock();
-  addresses.clear();
-  mtxGetBLEAddress.lock();
+  addresses.lock()->clear();
+
 }
 void GetSensorData::setDevices(std::vector<std::tuple<std::string, DeviceType>> &newDevice) {
-  mtxGetBLEAddress.lock();
+
   std::vector<std::tuple<std::basic_string<char>, DeviceType>> newVec;
-  for (const auto &e : addresses) {
+  auto lock = addresses.lock();
+  for (const auto& e : *lock) {
     if (contains(newDevice, e)) {
       newVec.emplace_back(e);
     }
@@ -526,11 +529,10 @@ void GetSensorData::setDevices(std::vector<std::tuple<std::string, DeviceType>> 
       newVec.emplace_back(e);
     }
   }
-  addresses.clear();
+  lock->clear();
   for (const auto &e : newVec) {
     Serial.printf("  -  adding new device %s\n", get<0>(e).c_str());
-    addresses.emplace_back(e);
+    addresses.lock()->emplace_back(e);
   }
-  mtxGetBLEAddress.lock();
 }
 

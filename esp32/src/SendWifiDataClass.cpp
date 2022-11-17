@@ -1,9 +1,11 @@
 #include "SendWifiDataClass.h"
 #include "generated/packet.pb.h"
-#include "DecodeException.h"
+#include "exceptions/DecodeException.h"
 #include "pb_encode.h"
 #include <memory>
 #include <cstring>
+#include <optional>
+#include "lib/log.h"
 
 using namespace std;
 
@@ -34,8 +36,7 @@ SendWifiDataClass::SendWifiDataClass(vector<WiFiStorage> &wifi) {
   }
   int status = pb_encode(&output, WiFiVector_fields, p.get());
   if (!status) {
-    Serial.print("Encoding failed:");
-    Serial.println(PB_GET_ERROR(&output));
+    LOG("Encoding failed: %s\n", PB_GET_ERROR(&output));
     throw DecodeException();
   }
   for (int i = 0; i < output.bytes_written; i++) {

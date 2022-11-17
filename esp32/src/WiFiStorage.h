@@ -3,7 +3,6 @@
 
 #include <string>
 #include <vector>
-#include "NimBLECharacteristic.h"
 
 using namespace std;
 
@@ -13,7 +12,7 @@ class WiFiStorage {
   int32_t Channel;
   bool isEncrypted;
  public:
-  WiFiStorage(string SSID, uint8_t *BSSID, int32_t Channel, bool isEncrypted) noexcept;
+  WiFiStorage(const string& SSID, uint8_t *BSSID, int32_t Channel, bool isEncrypted) noexcept;
 
   friend class SendWifiDataClass;
 };

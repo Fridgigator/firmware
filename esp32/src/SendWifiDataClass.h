@@ -3,6 +3,7 @@
 
 #include "WiFiStorage.h"
 #include <deque>
+#include <optional>
 
 class SendWifiDataClass {
   deque<uint8_t> returnData;

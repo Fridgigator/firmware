@@ -1,7 +1,6 @@
 #ifndef ESP32_STATETYPE_H
 #define ESP32_STATETYPE_H
 enum StateType {
-  Initial,
   GetSize,
   GetCommand,
   SendWifiDataSize,
