@@ -1,8 +1,6 @@
-#include <mutex>
 #include <unordered_map>
-
-#include "GetSensorData.h"
 #include "BLEUtils.h"
+#include "GetSensorData.h"
 #include "HTTPSend.h"
 #include "Constants.h"
 #include "SensorDataStore.h"
@@ -382,7 +380,7 @@ bool connectToServer(BLEAdvertisedDevice &device,
     Serial.printf(" - Found our service %s for %d\n", pRemoteService->getUUID().toString().c_str(), deviceType);
     Serial.printf(" - Type of measurement = %s\n", type == MeasureType::TEMP ? "TEMP" : "HUMIDITY");
     if (pRemoteReadCharacteristic == nullptr) {
-      Serial.printf("\033[0;31mNull pointer!!\033[0;30m\n");
+      Serial.printf("\033[0;31mNull pointer!!\033[0m\n");
       continue;
     }
     Serial.printf(" - Found our characteristic %s\n", pRemoteReadCharacteristic->getUUID().toString().c_str());
@@ -451,8 +449,9 @@ void GetSensorData::loop() {
     lock->pop_front();
   }
   Serial.printf(" - %s\n", std::get<0>(curAddress).c_str());
-  addresses.lock()->emplace_back(curAddress);
-
+  {
+    addresses.lock()->emplace_back(curAddress);
+  }
 
   Serial.println("Before get scan");
   delay(100);
@@ -479,7 +478,7 @@ void GetSensorData::loop() {
 
       isConnectingBLE.lockAndSwap(true);
 
-      xTaskCreate(innerConnectToServer, "Name", 16000, (void *) &pa, 1, &Task1);
+      xTaskCreate(innerConnectToServer, "Connect to Server", 16000, (void *) &pa, 1, &Task1);
 
       delay(30'000);
       unsigned long _lastGotData;
@@ -492,7 +491,7 @@ void GetSensorData::loop() {
                       _lastGotData,
                       getTime(),
                       _lastGotData);
-        Serial.println("\033[0;31mRestarting");
+        Serial.println("\033[31m 31mRestarting\033[0m");
 
         esp_restart();
       }
@@ -519,7 +518,7 @@ void GetSensorData::setDevices(std::vector<std::tuple<std::string, DeviceType>> 
 
   std::vector<std::tuple<std::basic_string<char>, DeviceType>> newVec;
   auto lock = addresses.lock();
-  for (const auto& e : *lock) {
+  for (const auto &e : *lock) {
     if (contains(newDevice, e)) {
       newVec.emplace_back(e);
     }
@@ -532,7 +531,7 @@ void GetSensorData::setDevices(std::vector<std::tuple<std::string, DeviceType>> 
   lock->clear();
   for (const auto &e : newVec) {
     Serial.printf("  -  adding new device %s\n", get<0>(e).c_str());
-    addresses.lock()->emplace_back(e);
+    lock->emplace_back(e);
   }
 }
 

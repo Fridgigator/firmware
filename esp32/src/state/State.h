@@ -1,9 +1,9 @@
 #ifndef ESP32_STATE_H
 #define ESP32_STATE_H
-#ifdef ARDUINO
 #include <WiFi.h>
 #include <Preferences.h>
-#else
+
+#ifndef ARDUINO
 int settimeofday(const struct timeval *tv, const struct timezone *tz);
 #endif
 

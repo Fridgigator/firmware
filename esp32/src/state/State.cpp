@@ -9,7 +9,6 @@
 #include <cstring>
 #include "../Constants.h"
 #include "../GetSensorData.h"
-#include "../SendData.h"
 #include "../getTime.h"
 #include "../lib/log.h"
 
@@ -20,9 +19,13 @@ void printDeque(deque<uint8_t> &val);
 
 safe_std::mutex<WiFiState> wifiState;
 
-
 State::State() : currentState(nullptr), type(GetSize) {}
-std::tuple<variant<void *, int, GetCommandClass, SendWifiDataClass, GetWifiUsernamePasswordClass, GetWiFiStateSizeClass>, StateType> procGetSize(deque<uint8_t>& dequeValue){
+std::tuple<variant<void *,
+                   int,
+                   GetCommandClass,
+                   SendWifiDataClass,
+                   GetWifiUsernamePasswordClass,
+                   GetWiFiStateSizeClass>, StateType> procGetSize(deque<uint8_t> &dequeValue) {
   array<uint8_t, 4> sizeVector{};
 
   sizeVector.at(0) = dequeValue.front();
@@ -43,8 +46,12 @@ std::tuple<variant<void *, int, GetCommandClass, SendWifiDataClass, GetWifiUsern
   return tuple(GetCommandClass(size), GetCommand);
 }
 
-#ifdef ARDUINO
-std::tuple<variant<void *, int, GetCommandClass, SendWifiDataClass, GetWifiUsernamePasswordClass, GetWiFiStateSizeClass>, StateType> getWiFi() {
+std::tuple<variant<void *,
+                   int,
+                   GetCommandClass,
+                   SendWifiDataClass,
+                   GetWifiUsernamePasswordClass,
+                   GetWiFiStateSizeClass>, StateType> getWiFi() {
   vector<WiFiStorage> wifis;
   int n = WiFi.scanNetworks();
   for (int i = 0; i < n; i++) {
@@ -60,7 +67,7 @@ std::tuple<variant<void *,
                    GetCommandClass,
                    SendWifiDataClass,
                    GetWifiUsernamePasswordClass,
-                   GetWiFiStateSizeClass>, StateType> wifiConnect(unique_ptr<BLESendPacket>& message){
+                   GetWiFiStateSizeClass>, StateType> wifiConnect(unique_ptr<BLESendPacket> &message) {
   auto wifiConnectInfo = make_unique<WiFiConnectInfo>(message->type.wifiConnectInfo);
   isConnecting = true;
   WiFiClass::mode(WIFI_STA);
@@ -91,7 +98,6 @@ std::tuple<variant<void *,
   th.detach();
   return tuple(nullptr, GetSize);
 }
-#endif
 
 std::tuple<variant<void *,
                    int,
@@ -153,11 +159,12 @@ std::tuple<variant<void *,
     {
       auto _sensorData = sensorData.lock();
       MeasureType measure_type;
-      switch(values->values[i].measure_type){
-        case ValuesInterDevice_MEASURE_TYPE_HUMIDITY: measure_type = MeasureType::HUMIDITY; break;
-        case ValuesInterDevice_MEASURE_TYPE_TEMP: measure_type = MeasureType::TEMP; break;
-        default:
-          throw "unreachable";
+      switch (values->values[i].measure_type) {
+        case ValuesInterDevice_MEASURE_TYPE_HUMIDITY: measure_type = MeasureType::HUMIDITY;
+          break;
+        case ValuesInterDevice_MEASURE_TYPE_TEMP: measure_type = MeasureType::TEMP;
+          break;
+        default:throw "unreachable";
       }
 
       auto it = _sensorData->find(values->values[i].address);
@@ -194,7 +201,7 @@ std::tuple<variant<void *,
   return tuple(nullptr, GetSize);
 }
 
-void State::push(Reader& reader) {
+void State::push(Reader &reader) {
   deque<uint8_t> dequeValue = reader.read();
   while (!dequeValue.empty()) {
     LOG("type: %d\n", type);
@@ -219,7 +226,7 @@ void State::push(Reader& reader) {
           bool status = pb_decode(&stream, BLESendPacket_fields, message.get());
 
           if (!status) {
-            LOG("Decoding failed (get command): %s\n",PB_GET_ERROR(&stream));
+            LOG("Decoding failed (get command): %s\n", PB_GET_ERROR(&stream));
             throw DecodeException();
           }
           LOG("command: %d\n", message->which_type);
@@ -244,7 +251,7 @@ void State::push(Reader& reader) {
             case BLESendPacket_token_tag: {
               string nonce = message->type.token.uuid;
               LOG("nonce=");
-              LOG("%s\n",nonce.c_str());
+              LOG("%s\n", nonce.c_str());
               // I have to do this because I'm low on stack space
               registerToken.lockAndSwap(std::move(nonce));
               break;
@@ -257,7 +264,7 @@ void State::push(Reader& reader) {
             }
             default: {
               LOG("Unknown packet type=");
-              LOG("%d\n",message->which_type);
+              LOG("%d\n", message->which_type);
               throw DecodeException();
             }
           }
@@ -294,7 +301,7 @@ void State::push(Reader& reader) {
 
           if (!status) {
             LOG("Decoding failed:");
-            LOG("%s\n",PB_GET_ERROR(&stream));
+            LOG("%s\n", PB_GET_ERROR(&stream));
             throw DecodeException();
           }
 
@@ -305,7 +312,7 @@ void State::push(Reader& reader) {
       }
       default: {
         LOG("Error Pushing Type=");
-        LOG("%d\n",type);
+        LOG("%d\n", type);
         printDeque(dequeValue);
         throw StateException();
       }
@@ -362,7 +369,7 @@ vector<uint8_t> State::getPacket() {
     }
     default: {
       LOG("Error Getting Type=");
-      LOG("%d\n",type);
+      LOG("%d\n", type);
       throw StateException();
     }
   }
@@ -374,13 +381,13 @@ void printVec(optional<vector<uint8_t>> val) {
   } else {
     vector<uint8_t> v = val.value();
     for (int i = 0; i < v.size(); i++) {
-      LOG("v[%d]=%d\n",i,v[i]);
+      LOG("v[%d]=%d\n", i, v[i]);
     }
   }
 
 }
 void printDeque(deque<uint8_t> &val) {
   for (int i = 0; i < val.size(); i++) {
-    LOG("v[%d]=%d\n",i,val[i]);
+    LOG("v[%d]=%d\n", i, val[i]);
   }
 }

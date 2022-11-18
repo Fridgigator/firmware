@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <mutex>
+#include "log.h"
 
 namespace safe_std {
 
@@ -16,7 +17,7 @@ class mutex_guard {
   mutex_guard(mutex<T> *parent) noexcept;
   ~mutex_guard();
   T &operator*() noexcept;
-  T* operator->() noexcept;
+  T *operator->() noexcept;
 };
 
 template<class T>
@@ -34,7 +35,7 @@ T &mutex_guard<T>::operator*() noexcept {
   return _parent->val;
 }
 template<class T>
-T* mutex_guard<T>::operator->() noexcept {
+T *mutex_guard<T>::operator->() noexcept {
   assert(_parent != nullptr);
   return &_parent->val;
 }
@@ -44,13 +45,14 @@ class mutex {
   T val;
   bool isBorrowed = false;
   std::mutex mtx;
+  int cnt = 0;
  public:
   mutex() = default;
 
   mutex(T t);
 
   mutex_guard<T> lock() noexcept;
-  T lockAndSwap(T&& newVal) noexcept;
+  T lockAndSwap(T &&newVal) noexcept;
   void doneWithMutex() noexcept;
   ~mutex() noexcept;
   friend class mutex_guard<T>;
@@ -59,7 +61,6 @@ template<class T>
 mutex<T>::mutex(T t) {
   val = t;
 }
-
 template<class T>
 mutex_guard<T> mutex<T>::lock() noexcept {
   mtx.lock();
@@ -79,7 +80,7 @@ void mutex<T>::doneWithMutex() noexcept {
   mtx.unlock();
 }
 template<class T>
-T mutex<T>::lockAndSwap(T&& newVal) noexcept {
+T mutex<T>::lockAndSwap(T &&newVal) noexcept {
   mtx.lock();
   assert(!isBorrowed);
   isBorrowed = true;

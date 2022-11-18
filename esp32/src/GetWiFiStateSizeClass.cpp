@@ -1,6 +1,6 @@
+#include <HardwareSerial.h>
 #include <memory>
 #include <cstring>
-#include <HardwareSerial.h>
 #include "GetWiFiStateSizeClass.h"
 #include "generated/packet.pb.h"
 #include "pb_encode.h"

@@ -7,7 +7,7 @@
 #include <map>
 #include "state/State.h"
 
-extern safe_std::mutex<State*> state;
+extern safe_std::mutex<State *> state;
 extern safe_std::mutex<std::string> registerToken;
 
 extern std::string uuid;

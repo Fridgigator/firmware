@@ -9,7 +9,7 @@ auto ScanResults::getScanResults() -> NimBLEScanResults {
 }
 ScanResults::ScanResults() = default;
 
-ScanResults::~ScanResults(){
+ScanResults::~ScanResults() {
   if (scanResults != nullptr) {
     scanResults->stop();
     scanResults->clearResults();

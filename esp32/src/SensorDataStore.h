@@ -15,5 +15,4 @@ struct SensorDataStore {
 
 };
 
-
 #endif //ESP32_SRC_SENSORDATASTORE_H_

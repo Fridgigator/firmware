@@ -11,7 +11,6 @@
 #include "exceptions/StateException.h"
 #include "state/State.h"
 #include "uuid.h"
-#include "WiFiStorage.h"
 #include "Constants.h"
 #include "GetSensorData.h"
 #include "WebDataPollingClient.h"
@@ -33,8 +32,7 @@ safe_std::mutex<bool> mtxReadPrefs;
 safe_std::mutex<std::string> registerToken;
 
 safe_std::mutex<bool> bleIsInUse;
-safe_std::mutex<State*> state;
-
+safe_std::mutex<State *> state;
 
 class CharacteristicCallback : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *ch) override {
@@ -65,14 +63,13 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer) override {
     bleIsInUse.lockAndSwap(true);
 
-    State* oldState = state.lockAndSwap(new State);
+    State *oldState = state.lockAndSwap(new State);
     delete oldState;
-
 
   }
 
   void onDisconnect(NimBLEServer *pServer) override {
-    auto* s = state.lockAndSwap(new State);
+    auto *s = state.lockAndSwap(new State);
     delete s;
 
     bleIsInUse.lockAndSwap(false);
@@ -81,7 +78,6 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 };
 
 vector<uint8_t> getData(NimBLECharacteristic *pRead, NimBLECharacteristic *pWrite);
-WebData::WebDataPollingClient *dataFromServerClient;
 CharacteristicCallback *c_callback;
 GetSensorData *getSensorData;
 
@@ -90,7 +86,7 @@ void clientConnectLoop();
 string uuid;
 
 void recData(BackendToFirmwarePacket packet) {
-  LOG("packet: %d\n",packet.which_type);
+  LOG("packet: %d\n", packet.which_type);
   switch (packet.which_type) {
     case BackendToFirmwarePacket_get_sensors_list_tag: {
       LOG("GET_SENSORS_LIST\n");
@@ -127,7 +123,7 @@ void recData(BackendToFirmwarePacket packet) {
           .sensor_info_count = static_cast<pb_size_t>(sensorInfo.size()),
       };
 
-      Serial.printf("sizeof sensorlist = %d\n", sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]));
+      Serial.printf("sizeof sensorlist = %lu\n", sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]));
       for (int i = 0; i < sensorInfo.size()
           && i < sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]); i++) {
 
@@ -184,11 +180,11 @@ void recData(BackendToFirmwarePacket packet) {
       break;
     }
     default: {
-      LOG("default %d\n",BackendToFirmwarePacket_add_sensor_tag);
+      LOG("default %d\n", BackendToFirmwarePacket_add_sensor_tag);
       break;
     }
   }
-  LOG("DONE: %d\n",BackendToFirmwarePacket_add_sensor_tag);
+  LOG("DONE: %d\n", BackendToFirmwarePacket_add_sensor_tag);
 }
 
 [[noreturn]]
@@ -250,8 +246,8 @@ void setup() {
       {
         LOG(" - about to lock isBLEInUse\n");
         auto lock = bleIsInUse.lock();
-         _bleIsInUse = *lock;
-        LOG("isBLEInUse=%d\n",_bleIsInUse);
+        _bleIsInUse = *lock;
+        LOG("isBLEInUse=%d\n", _bleIsInUse);
       }
       if (!_bleIsInUse) {
         getSensorData->loop();
@@ -274,7 +270,7 @@ void setup() {
   xTaskCreate([](void *arg) {
     for (;;) {
 
-      delay(60'000*60);
+      delay(60'000 * 60);
       Serial.println("Restarting on the hour");
       BLEDevice::deinit(true);
       esp_restart();
@@ -300,12 +296,12 @@ void clientConnectLoop() {
         auto _sensorData = sensorData.lock();
         sensorDataCopy = *_sensorData;
       }
-      for(const auto& data: sensorDataCopy){
+      for (const auto &data : sensorDataCopy) {
         SendData(data.second.address, data.second);
       }
       delay(2000);
     }
-  }, "Name", 32000, (void *) nullptr, 1, &Task1);
+  }, "Send/rec from server", 32000, (void *) nullptr, 1, &Task1);
 
   Serial.println("Finished creating connection");
 }
@@ -334,7 +330,6 @@ void loop1() {
     {
       _registerToken = registerToken.lockAndSwap("");
     }
-
 
     if (!_registerToken.empty()) {
       Serial.println("token register");

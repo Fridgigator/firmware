@@ -1,7 +1,9 @@
 #ifndef ESP32_SRC_HTTPSEND_H_
 #define ESP32_SRC_HTTPSEND_H_
+
 #include <Arduino.h>
 #include <map>
+#include <string>
 #include <variant>
 #include "generated/FirmwareBackend.pb.h"
 

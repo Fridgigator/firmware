@@ -1,6 +1,5 @@
 #include "Reader.h"
 using namespace std;
-#ifdef ARDUINO
 
 Reader::Reader(NimBLEAttValue *ch) {
   this->data = ch;
@@ -14,4 +13,3 @@ deque<uint8_t> Reader::read() {
   return returnValue;
 
 }
-#endif

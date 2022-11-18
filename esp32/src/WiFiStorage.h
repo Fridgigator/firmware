@@ -12,7 +12,7 @@ class WiFiStorage {
   int32_t Channel;
   bool isEncrypted;
  public:
-  WiFiStorage(const string& SSID, uint8_t *BSSID, int32_t Channel, bool isEncrypted) noexcept;
+  WiFiStorage(const string &SSID, uint8_t *BSSID, int32_t Channel, bool isEncrypted) noexcept;
 
   friend class SendWifiDataClass;
 };
