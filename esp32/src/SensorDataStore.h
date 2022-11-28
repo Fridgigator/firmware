@@ -4,7 +4,12 @@
 #include "DeviceType.h"
 enum MeasureType {
   TEMP,
-  HUMIDITY
+  HUMIDITY,
+  DHT11_TEMP,
+  DHT22_TEMP,
+  DHT11_HUMIDITY,
+  DHT22_HUMIDITY,
+  PICO_TEMP,
 };
 struct SensorDataStore {
   long long timestamp;

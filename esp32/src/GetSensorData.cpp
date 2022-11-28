@@ -19,12 +19,13 @@ static std::vector<BLEUUID> serviceNordicUUIDs({BLEUUID("ef680200-9b35-4933-9b10
                                                 BLEUUID("ef680400-9b35-4933-9b10-52ffa9740042"),
                                                 BLEUUID("ef680500-9b35-4933-9b10-52ffa9740042")});
 static std::vector<BLEUUID> serviceTIUUIDs({BLEUUID("f000aa00-0451-4000-b000-000000000000")});
-static std::vector<BLEUUID> serviceCustomUUIDs({BLEUUID("00000000-0000-4000-0000-000000000000")});
 static std::vector<BLEUUID> serviceHubUUIDs({BLEUUID(SERVICE_UUID)});
+
+static std::vector<BLEUUID> servicePicoUUIDs({BLEUUID("0000ffe0-0000-1000-8000-00805f9b34fb")});
+static BLEUUID charPicoUUID("0000ffe1-0000-1000-8000-00805f9b34fb");
 
 static BLEUUID charNordicTempUUID("ef680201-9b35-4933-9b10-52ffa9740042");
 static BLEUUID charNordicHumidityUUID("ef680203-9b35-4933-9b10-52ffa9740042");
-static BLEUUID charCustomUUID("00000000-0000-4000-0000-000000000000");
 static BLEUUID charTISendUUID("f000aa02-0451-4000-b000-000000000000");
 static BLEUUID charTIRecUUID("f000aa01-0451-4000-b000-000000000000");
 
@@ -48,6 +49,115 @@ bool contains(std::vector<T> &v, T key) {
     }
   }
   return false;
+}
+
+safe_std::mutex<deque<uint8_t>> pico_data;
+safe_std::mutex<bool> hit_null = false;
+void notifyCustomCallback(
+    BLERemoteCharacteristic *pBLERemoteCharacteristic,
+    const uint8_t *pData,
+    size_t length,
+    bool isNotify) {
+
+  for (int i = 0; i < length; i++) {
+    if (pData[i] == 0) {
+      hit_null.lockAndSwap(true);
+    }
+    if (*hit_null.lock()) {
+      pico_data.lock()->emplace_front(pData[i]);
+    }
+  }
+  auto locked_pico_data = pico_data.lock();
+  bool found_null = false;
+  vector<string> fullData;
+  string tmpString;
+  while (any_of(locked_pico_data->begin(), locked_pico_data->end(), [](auto a) { return a == 0; })) {
+    char it = locked_pico_data->back();
+    locked_pico_data->pop_back();
+    if (it == 0) {
+      string data_to_copy = tmpString;
+      fullData.emplace_back(data_to_copy);
+      tmpString.clear();
+    } else {
+      tmpString += it;
+    }
+  }
+  if (fullData.empty()) {
+    return;
+  }
+
+  LOG("Got Data\n");
+  for (const auto &str : fullData) {
+    LOG("Str: %s\n", str.c_str());
+  }
+  if (fullData.empty()) {
+    LOG("Not enough data\n");
+    return;
+  }
+
+  LOG("Finished erasing and popping\n");
+  for (const auto &data : fullData) {
+    string parsedData = data;
+    LOG("parsed data length=%zu\n", parsedData.size());
+    if (parsedData.size() >= 3) {
+
+      MeasureType type;
+      float val;
+      LOG(" - Type: %d\n", parsedData.at(0));
+      switch (parsedData.at(0)) {
+        case 'H': {
+          type = MeasureType::DHT22_HUMIDITY;
+          break;
+        }
+        case 'T': {
+          type = MeasureType::DHT22_TEMP;
+          break;
+        }
+        case 'h': {
+          type = MeasureType::DHT11_HUMIDITY;
+          break;
+        }
+        case 't': {
+          type = MeasureType::DHT11_TEMP;
+          break;
+        }
+        case 'p': {
+          type = MeasureType::PICO_TEMP;
+          break;
+        }
+        default: {
+          LOG("Default? ? ! ! \n");
+        }
+      }
+      parsedData.erase(0, 1);
+      val = stof(parsedData);
+      Serial.printf("Notify callback for characteristic %s of data length %zu. data: %f\n",
+                    pBLERemoteCharacteristic->getUUID().toString().c_str(),
+                    length,
+                    val);
+      std::string
+
+          remoteAddress =
+          pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
+
+      lastGotData.lockAndSwap(getTime());
+
+      {
+        auto _sensorData = sensorData.lock();
+        auto time = getTime();
+
+        _sensorData->insert_or_assign(remoteAddress + to_string(type), SensorDataStore{
+            .timestamp = time,
+            .address = remoteAddress,
+            .type = DeviceType::Custom,
+            .value = val,
+            .measure_type = type,
+
+        });
+      }
+    }
+    lastGotData.lockAndSwap(getTime());
+  }
 }
 
 void notifyNordicCallbackTemp(
@@ -87,8 +197,6 @@ void nordicCallbackProcess(BLERemoteCharacteristic *pBLERemoteCharacteristic,
   std::string
 
       remoteAddress = pBLERemoteCharacteristic->getRemoteService()->getClient()->getConnInfo().getAddress().toString();
-  auto *sendTuple = new std::tuple<int, int, std::string>(low, high, remoteAddress);
-  TaskHandle_t Task1;
 
   lastGotData.lockAndSwap(getTime());
 
@@ -180,7 +288,7 @@ bool connectToServer(BLEAdvertisedDevice &device,
       break;
     case Nordic:vectorUUID = &serviceNordicUUIDs;
       break;
-    case Custom:vectorUUID = &serviceCustomUUIDs;
+    case Custom:vectorUUID = &servicePicoUUIDs;
       break;
     case Hub:vectorUUID = &serviceHubUUIDs;
       break;
@@ -307,6 +415,16 @@ bool connectToServer(BLEAdvertisedDevice &device,
               break;
             case HUMIDITY:vList.values[i].measure_type = ValuesInterDevice_MEASURE_TYPE_HUMIDITY;
               break;
+            case DHT11_TEMP:vList.values[i].measure_type = ValuesInterDevice_MEASURE_TYPE_DHT11_TEMP;
+              break;
+            case DHT22_TEMP:vList.values[i].measure_type = ValuesInterDevice_MEASURE_TYPE_DHT22_TEMP;
+              break;
+            case DHT11_HUMIDITY:vList.values[i].measure_type = ValuesInterDevice_MEASURE_TYPE_DHT11_HUMIDITY;
+              break;
+            case DHT22_HUMIDITY:vList.values[i].measure_type = ValuesInterDevice_MEASURE_TYPE_DHT22_HUMIDITY;
+              break;
+            case PICO_TEMP:vList.values[i].measure_type = ValuesInterDevice_MEASURE_TYPE_PICO_TEMP;
+              break;
           }
           switch (value.type) {
             case TI:vList.values[i].device_type = ValuesInterDevice_DEVICE_TYPE_TI;
@@ -369,7 +487,7 @@ bool connectToServer(BLEAdvertisedDevice &device,
       pRemoteReadCharacteristics[MeasureType::HUMIDITY] = pRemoteService->getCharacteristic(charNordicHumidityUUID);
       break;
     }
-    case Custom:pRemoteReadCharacteristics[MeasureType::TEMP] = pRemoteService->getCharacteristic(charCustomUUID);
+    case Custom:pRemoteReadCharacteristics[MeasureType::TEMP] = pRemoteService->getCharacteristic(charPicoUUID);
       break;
     case Hub:pRemoteReadCharacteristics[MeasureType::TEMP] = pRemoteService->getCharacteristic(charHubUUID);
       break;
@@ -402,7 +520,11 @@ bool connectToServer(BLEAdvertisedDevice &device,
           pRemoteReadCharacteristic->registerForNotify(
               type == MeasureType::HUMIDITY ? notifyNordicCallbackHumidity : notifyNordicCallbackTemp);
           break;
-        case Custom:break;
+        case Custom: {
+          hit_null.lockAndSwap(false);
+          pRemoteReadCharacteristic->registerForNotify(notifyCustomCallback);
+
+        }
         case Hub:break;
       }
     }

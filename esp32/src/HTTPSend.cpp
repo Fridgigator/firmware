@@ -12,7 +12,7 @@ std::variant<BackendToFirmwarePacket, std::string> PostData(std::string url,
   ESP_LOGI("NONE", "Free Ram: %d", esp_get_free_heap_size());
 
   HTTPClient http_client;
-  std::string fullUrl = std::string("http://fridgigator.herokuapp.com") + url;
+  std::string fullUrl = std::string("http://fridgigator-001.fly.dev") + url;
   http_client.begin(fullUrl.c_str()/*, rootCACertificate*/);
 
   for (auto [key, val] : headers) {
@@ -47,9 +47,11 @@ std::variant<BackendToFirmwarePacket, std::string> PostData(std::string url,
 
 std::variant<BackendToFirmwarePacket, std::string> GetData(std::string url,
                                                            std::map<std::string, std::string> headers) {
+  LOG("In GetData\n");
   ESP_LOGI("NONE", "Free Ram: %d", esp_get_free_heap_size());
   HTTPClient http_client;
-  std::string fullUrl = std::string("http://fridgigator.herokuapp.com") + url;
+  std::string fullUrl = std::string("http://fridgigator-001.fly.dev") + url;
+  LOG("client begin\n");
   http_client.begin(fullUrl.c_str()/*, rootCACertificate*/);
 
   for (auto [key, val] : headers) {

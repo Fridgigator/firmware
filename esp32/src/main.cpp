@@ -97,6 +97,9 @@ void recData(BackendToFirmwarePacket packet) {
         auto device = res.getDevice(i);
         string addressString = device.getAddress().toString();
         string nameString = device.getName();
+        if(nameString.empty()){
+          nameString = addressString;
+        }
         SensorInfo info{};
         int len = 0;
         for (int j = 0; j < addressString.size() && j < sizeof(info.address) / sizeof(info.address[0]);
@@ -290,6 +293,7 @@ void clientConnectLoop() {
     WebData::WebDataPollingClient dataFromServerClient(url, headersMap);
     dataFromServerClient.onRecData(recData);
     for (;;) {
+      LOG("About to poll\n");
       dataFromServerClient.poll();
       std::map<basic_string<char>, SensorDataStore> sensorDataCopy;
       {
@@ -334,7 +338,7 @@ void loop1() {
     if (!_registerToken.empty()) {
       Serial.println("token register");
 
-      std::string url = ("http://fridgigator.herokuapp.com/api/v1/register-hub?hub-uuid=");
+      std::string url = ("http://fridgigator.fly.dev/api/v1/register-hub?hub-uuid=");
       url += (uuid);
       url = (url + "&addr=");
       url = url + NimBLEDevice::getAddress().toString();

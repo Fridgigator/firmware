@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "WebDataPollingClient.h"
 #include "HTTPSend.h"
+#include "lib/log.h"
 
 namespace WebData {
 
@@ -14,7 +15,9 @@ void WebDataPollingClient::onRecData(const std::function<void(BackendToFirmwareP
   this->callback = _callback;
 }
 void WebDataPollingClient::poll() {
+  LOG("In polling\n");
   auto d = GetData(url, headers);
+  LOG("After getting data\n");
   if (d.index() == 1) {
     return;
   } else {

@@ -8,6 +8,20 @@ void SendData(const std::string &remoteAddress, const SensorDataStore &store) {
       break;
     case MeasureType::HUMIDITY:measure_type = "humidity";
       break;
+    case DHT11_TEMP:measure_type = "dht11_temp";
+      break;
+    case DHT22_TEMP:
+      measure_type = "dht22_temp";
+      break;
+    case DHT11_HUMIDITY:
+      measure_type = "dht11_humidity";
+      break;
+    case DHT22_HUMIDITY:
+      measure_type = "dht22_humidity";
+      break;
+    case PICO_TEMP:
+      measure_type = "pico_temp";
+      break;
   }
   std::string url =
       ("/api/v1/send-data?address=") + remoteAddress + "&value=" + std::to_string(store.value)
