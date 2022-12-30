@@ -338,7 +338,7 @@ void loop1() {
     if (!_registerToken.empty()) {
       Serial.println("token register");
 
-      std::string url = ("http://fridgigator-001.fly.dev/api/v1/register-hub?hub-uuid=");
+      std::string url = ("http://detoirhbf2f8n.cloudfront.net/api/v1/register-hub?hub-uuid=");
       url += (uuid);
       url = (url + "&addr=");
       url = url + NimBLEDevice::getAddress().toString();
