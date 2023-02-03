@@ -1,6 +1,6 @@
 #ifndef ESP32_SRC_DEVICETYPE_H_
 #define ESP32_SRC_DEVICETYPE_H_
-enum DeviceType {
+enum TypeOfDevice {
   Nordic,
   TI,
   Custom,

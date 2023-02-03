@@ -2,419 +2,483 @@
 #include "NimBLEDevice.h"
 #include "WiFi.h"
 #include <vector>
-#include <queue>
 #include <cstring>
 #include <Preferences.h>
-#include <HTTPClient.h>
 #include <map>
+#include <esp_websocket_client.h>
+#include <esp_task_wdt.h>
 
 #include "exceptions/StateException.h"
-#include "state/State.h"
 #include "uuid.h"
 #include "Constants.h"
 #include "GetSensorData.h"
-#include "WebDataPollingClient.h"
 #include "pb_encode.h"
-#include "generated/FirmwareBackend.pb.h"
+#include "generated/firmware_backend.pb.h"
 #include "pb_decode.h"
-#include "exceptions/DecodeException.h"
 #include "BLEUtils.h"
 #include "setClock.h"
-#include "HTTPSend.h"
-#include "SendData.h"
 #include "lib/log.h"
+#include "lib/websocket/websocket.h"
+#include "secrets.h"
 
 using namespace std;
-
+bool timeSet = false;
 NimBLECharacteristic *pRead = nullptr;
-safe_std::mutex<bool> mtxReadPrefs;
-
-safe_std::mutex<std::string> registerToken;
 
 safe_std::mutex<bool> bleIsInUse;
-safe_std::mutex<State *> state;
 
 class CharacteristicCallback : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic *ch) override {
-    auto s = state.lock();
-    if (*s != nullptr) {
-      auto val = ch->getValue();
-      Reader r(&val);
-      (*s)->push(r);
-    } else {
-      Serial.println("nullptr get");
-      throw StateException();
-    }
-  }
+    void onWrite(NimBLECharacteristic *ch) override {
 
-  void onRead(NimBLECharacteristic *ch) override {
-    auto s = state.lock();
-    if (*s != nullptr) {
-      ch->setValue((*s)->getPacket());
-      ch->indicate();
-    } else {
-      Serial.println("nullptr set");
-      throw StateException();
     }
-  }
+
+    void onRead(NimBLECharacteristic *ch) override {
+    }
 };
 
 class ServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer *pServer) override {
-    bleIsInUse.lockAndSwap(true);
+    void onConnect(NimBLEServer *pServer) override {
+        bleIsInUse.lockAndSwap(true);
+    }
 
-    State *oldState = state.lockAndSwap(new State);
-    delete oldState;
+    void onDisconnect(NimBLEServer *pServer) override {
 
-  }
-
-  void onDisconnect(NimBLEServer *pServer) override {
-    auto *s = state.lockAndSwap(new State);
-    delete s;
-
-    bleIsInUse.lockAndSwap(false);
-  }
+        bleIsInUse.lockAndSwap(false);
+    }
 
 };
 
 vector<uint8_t> getData(NimBLECharacteristic *pRead, NimBLECharacteristic *pWrite);
+
 CharacteristicCallback *c_callback;
-GetSensorData *getSensorData;
+optional<GetSensorData> getSensorData;
 
 void loop1();
+
 void clientConnectLoop();
+
 string uuid;
 
-void recData(BackendToFirmwarePacket packet) {
-  LOG("packet: %d\n", packet.which_type);
-  switch (packet.which_type) {
-    case BackendToFirmwarePacket_get_sensors_list_tag: {
-      LOG("GET_SENSORS_LIST\n");
-      ScanResults scanResultsClass;
-      auto res = scanResultsClass.getScanResults();
-      vector<SensorInfo> sensorInfo;
-      for (int i = 0; i < res.getCount(); i++) {
+void getSensorsList() {
+    ScanResults scanResultsClass;
+    auto res = scanResultsClass.getScanResults();
+    vector<SensorInfo> sensorInfo;
+    for (int i = 0; i < res.getCount(); i++) {
         auto device = res.getDevice(i);
         string addressString = device.getAddress().toString();
         string nameString = device.getName();
-        if(nameString.empty()){
-          nameString = addressString;
+        if (nameString.empty()) {
+            nameString = addressString;
         }
         SensorInfo info{};
         int len = 0;
-        for (int j = 0; j < addressString.size() && j < sizeof(info.address) / sizeof(info.address[0]);
-             j++) {
-          info.address[j] = addressString.at(j);
-          len = j;
+        for (int j = 0; j < addressString.size() && j < sizeof(info.address) / sizeof(info.address[0]); j++) {
+            info.address[j] = addressString.at(j);
+            len = j;
 
         }
         info.address[len + 1] = 0;
         len = 0;
 
         for (int j = 0; j < nameString.size() && j < sizeof(info.name) / sizeof(info.name[0]); j++) {
-          info.name[j] = nameString.at(j);
-          len = j;
+            info.name[j] = nameString.at(j);
+            len = j;
         }
         info.name[len + 1] = 0;
-        Serial.printf(" - name=%s", info.name);
         sensorInfo.push_back(info);
-      }
-      res.getCount();
-      auto buf = new pb_byte_t[1024];
-      pb_ostream_t output = pb_ostream_from_buffer(buf, 1024);
-      SensorsList sensorsList{
-          .sensor_info_count = static_cast<pb_size_t>(sensorInfo.size()),
-      };
-
-      Serial.printf("sizeof sensorlist = %lu\n", sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]));
-      for (int i = 0; i < sensorInfo.size()
-          && i < sizeof(sensorsList.sensor_info) / sizeof(sensorsList.sensor_info[0]); i++) {
-
-        Serial.printf(" - address=%s\n", sensorInfo.at(i).address);
-        Serial.printf(" - name=%s\n", sensorInfo.at(i).name);
-        sensorsList.sensor_info[i] = sensorInfo.at(i);
-
-      }
-      int encodeResult = pb_encode(&output, SensorsList_fields, &sensorsList);
-      if (!encodeResult) {
-        Serial.print("Encoding failed:");
-        Serial.println(PB_GET_ERROR(&output));
-        throw DecodeException();
-      }
-      std::map<string, string> headers;
-      headers.emplace("Board", uuid);
-      std::string url = "/api/v1/send-sensors";
-      Serial.printf("buf size=%d\n", output.bytes_written);
-      PostData(url, headers, buf, output.bytes_written);
-      delete[] buf;
-      break;
     }
-    case BackendToFirmwarePacket_clear_sensor_list_tag: {
-      LOG("clear\n");
-      getSensorData->clearDevices();
+    res.getCount();
+    vector<pb_byte_t> buf(1024);
+    pb_ostream_t output = pb_ostream_from_buffer(buf.data(), buf.size());
+    SensorsList sensorsList{.sensor_infos_count = static_cast<pb_size_t>(sensorInfo.size()),};
 
-      break;
+    for (int i = 0;
+         i < sensorInfo.size() && i < sizeof(sensorsList.sensor_infos) / sizeof(sensorsList.sensor_infos[0]); i++) {
+
+        sensorsList.sensor_infos[i] = sensorInfo.at(i);
+
     }
-    case BackendToFirmwarePacket_add_sensor_tag: {
-      LOG("ADDING SENSOR\n");
-      LOG("packet.type.add_sensor.add_sensor_info_count=%d\n", packet.type.add_sensor.add_sensor_info_count);
-      vector<std::tuple<std::string, DeviceType>> newDevices;
-      for (int i = 0; i < packet.type.add_sensor.add_sensor_info_count; i++) {
-        auto addSensorInfo = packet.type.add_sensor.add_sensor_info[i];
+    int encodeResult = pb_encode(&output, SensorsList_fields, &sensorsList);
+    if (!encodeResult) {
+        throw std::runtime_error(string("Encoding failed: ") + PB_GET_ERROR(&output));
+    }
+    std::map<string, string> headers;
+    headers.emplace("Board", uuid);
+    std::string url = "/api/v1/send-sensors";
+    buf.resize(output.bytes_written);
+}
+
+void addSensors(const unique_ptr<BackendToFirmwarePacket> &packet) {
+    vector<std::tuple<std::string, TypeOfDevice>> newDevices;
+    for (int i = 0; i < packet->type.add_sensor.add_sensor_infos_count; i++) {
+        auto addSensorInfo = packet->type.add_sensor.add_sensor_infos[i];
         std::string address = addSensorInfo.sensor_info.address;
-        LOG("address=%s\n", packet.type.add_sensor.add_sensor_info[i].sensor_info.address);
-        DeviceType deviceType;
+        TypeOfDevice deviceType;
         switch (addSensorInfo.device_type) {
-          case AddSensorInfo_DEVICE_TYPE_TI:deviceType = DeviceType::TI;
-
-            break;
-          case AddSensorInfo_DEVICE_TYPE_NORDIC:deviceType = DeviceType::Nordic;
-            break;
-          case AddSensorInfo_DEVICE_TYPE_CUSTOM:deviceType = DeviceType::Custom;
-            break;
-          case AddSensorInfo_DEVICE_TYPE_HUB:deviceType = DeviceType::Hub;
-            break;
+            case DeviceType_DEVICE_TYPE_TI:
+                deviceType = TypeOfDevice::TI;
+                break;
+            case DeviceType_DEVICE_TYPE_NORDIC:
+                deviceType = TypeOfDevice::Nordic;
+                break;
+            case DeviceType_DEVICE_TYPE_CUSTOM:
+                deviceType = TypeOfDevice::Custom;
+                break;
+            case DeviceType_DEVICE_TYPE_HUB:
+                deviceType = TypeOfDevice::Hub;
+                break;
+            case DeviceType_DEVICE_TYPE_UNSPECIFIED:
+                throw std::runtime_error("Assertion error: addSensorInfo.device_type is unspecified");
         }
-        LOG("deviceType=%d\n", deviceType);
-        newDevices.emplace_back(std::tuple<std::string, DeviceType>(address, deviceType));
-      }
-      LOG("setting devices\n");
-      getSensorData->setDevices(newDevices);
-      break;
+        newDevices.emplace_back(address, deviceType);
     }
-    default: {
-      LOG("default %d\n", BackendToFirmwarePacket_add_sensor_tag);
-      break;
+    getSensorData->setDevices(newDevices);
+}
+
+void recData(unique_ptr<BackendToFirmwarePacket> &packet) {
+    TaskHandle_t Task3;
+
+    // I *think* that this has to be a thread because it's called from a websocket callback. It seems that there's
+    // some kind of deadlock going on here if I don't
+    // TODO: verify if there is a requirement to have this as its own thread.
+
+    auto ret = xTaskCreate([](void *arg) {
+        ESP_ERROR_CHECK(esp_task_wdt_add(nullptr));
+        // Ensure that all heap allocations are freed by the end of the function call
+        // vTaskDelete prevents the destructors on unique_ptr from being run, thus causing memory leaking
+
+        {
+
+            unique_ptr<BackendToFirmwarePacket> packet1 = unique_ptr<BackendToFirmwarePacket>(
+                    reinterpret_cast<BackendToFirmwarePacket *>(arg));
+            switch (packet1->which_type) {
+                case BackendToFirmwarePacket_get_sensors_list_tag: {
+                    getSensorsList();
+                    break;
+                }
+                case BackendToFirmwarePacket_clear_sensor_list_tag: {
+                    getSensorData->clearDevices();
+                    break;
+                }
+                case BackendToFirmwarePacket_add_sensor_tag: {
+                    addSensors(packet1);
+                    break;
+                }
+                default: {
+                    throw runtime_error("Assertion error: packet1 has wrong type");
+                }
+            }
+        }
+        ESP_ERROR_CHECK(esp_task_wdt_delete(nullptr));
+
+        vTaskDelete(nullptr);
+    }, "recData", 16000, packet.release(), 1, &Task3);
+    if (ret != pdPASS) {
+        LOG("Error: %d\n", ret);
+        throw runtime_error("Couldn't create thread");
     }
-  }
-  LOG("DONE: %d\n", BackendToFirmwarePacket_add_sensor_tag);
 }
 
 [[noreturn]]
-void outerLoop1(void *arg) {
-  for (;;) {
-    loop1();
-    delay(100);
-  }
+void outerLoop1(void *) {
+    for (;;) {
+        loop1();
+        delay(100);
+    }
 
 }
+
 void setup() {
-  WiFiClass::mode(WIFI_STA);
-  getSensorData = new GetSensorData();
+    // Blink all lights for 3 seconds
+    gpio_config_t config = {
+            .pin_bit_mask = (1ULL << GPIO_NUM_23) | (1ULL << GPIO_NUM_19) | (1ULL << GPIO_NUM_18) |
+                            (1ULL << GPIO_NUM_17),
+            .mode =  GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
 
-  Serial.begin(115200);
+    };
+    ESP_ERROR_CHECK(gpio_config(&config));
+    for (int i = 0; i < 6; i++) {
+        ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_23, 1));
+        ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_19, 1));
+        ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_18, 1));
+        ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_17, 1));
 
-  Serial.println("Starting BLE work!");
-  c_callback = new CharacteristicCallback();
-  Preferences preferences;
-  preferences.begin("permanent", false);
-  uuid = preferences.getString("uuid").c_str();
-  if (!preferences.isKey("uuid")) {
-    char returnUUID[37];
-    UUIDGen(returnUUID);
-    preferences.putString("uuid", returnUUID);
+        delay(250);
+        ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_23, 0));
+        ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_19, 0));
+        ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_18, 0));
+        ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_17, 0));
+        delay(250);
+    }
+
+    // Turn on red LED when we're connected to the LED
+    xTaskCreate([](void *arg) {
+        for (;;) {
+            // Is connected and time is set up
+            if (WiFi.isConnected() && timeSet) {
+                ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_23, 1));
+            } else {
+                ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_23, 0));
+            }
+
+            // Are we connected to the websocket?
+            if (websocket::getInstance()->isConnected()) {
+                ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_17, 1));
+            } else {
+                ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_17, 0));
+            }
+
+            delay(250);
+        }
+    }, "WiFi loop", 1024, nullptr, 1, nullptr);
+
+
+    WiFiClass::mode(WIFI_STA);
+    getSensorData = GetSensorData();
+    ESP_ERROR_CHECK(esp_task_wdt_init(60, true));
+    Serial.begin(115200);
+
+    c_callback = new CharacteristicCallback();
+    Preferences preferences;
+    preferences.begin("permanent", false);
     uuid = preferences.getString("uuid").c_str();
-  }
-  Serial.printf("uuid=%s\n", uuid.c_str());
-  preferences.end();
-  std::string name = "ESP-" + uuid;
-  name.erase(15, std::string::npos);
-  Serial.printf("name=%s\n", name.c_str());
-  NimBLEDevice::init(name);
-  NimBLEServer *pServer = BLEDevice::createServer();
-  NimBLEService *pService = pServer->createService(SERVICE_UUID);
-
-  pRead = pService->createCharacteristic(CHARACTERISTIC_SERVER_UUID,
-                                         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::INDICATE);
-  pRead->setCallbacks(c_callback);
-  pService->start();
-  NimBLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
-  pAdvertising->setMinPreferred(0x12);
-  NimBLEDevice::startAdvertising();
-  NimBLEDevice::stopAdvertising();
-  NimBLEDevice::startAdvertising();
-
-  auto *pServerCallbacks = new ServerCallbacks();
-  pServer->setCallbacks(pServerCallbacks);
-
-  Serial.println("finished adding devices");
-  TaskHandle_t Task1;
-
-  xTaskCreate([](void *arg) {
-    for (;;) {
-      bool _bleIsInUse;
-      {
-        LOG(" - about to lock isBLEInUse\n");
-        auto lock = bleIsInUse.lock();
-        _bleIsInUse = *lock;
-        LOG("isBLEInUse=%d\n", _bleIsInUse);
-      }
-      if (!_bleIsInUse) {
-        getSensorData->loop();
-      }
-      LOG(" - out of loop\n");
-      delay(1'000);
-
+    if (!preferences.isKey("uuid")) {
+        char returnUUID[37];
+        UUIDGen(returnUUID);
+        preferences.putString("uuid", returnUUID);
+        uuid = preferences.getString("uuid").c_str();
     }
-    vTaskDelete(nullptr);
-  }, "Sending Sensor Data", 16000, nullptr, 1, &Task1);
+    preferences.end();
+    std::string name = "ESP-" + uuid;
+    name.erase(15, std::string::npos);
+    NimBLEDevice::init(name);
+    NimBLEServer *pServer = BLEDevice::createServer();
+    NimBLEService *pService = pServer->createService(SERVICE_UUID);
 
-  delay(100);
-  TaskHandle_t Task2;
+    pRead = pService->createCharacteristic(CHARACTERISTIC_SERVER_UUID,
+                                           NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::INDICATE);
+    pRead->setCallbacks(c_callback);
+    pService->start();
+    NimBLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
+    pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+    pAdvertising->setMinPreferred(0x12);
+    NimBLEDevice::startAdvertising();
+    NimBLEDevice::stopAdvertising();
+    NimBLEDevice::startAdvertising();
 
-  xTaskCreate(outerLoop1, "Main Loop Task", 16000, nullptr, 1, &Task2);
+    auto *pServerCallbacks = new ServerCallbacks();
+    pServer->setCallbacks(pServerCallbacks);
 
-  Serial.println("Characteristic defined! Now you can read it in your phone!");
-  TaskHandle_t Task3;
+    TaskHandle_t Task1;
 
-  xTaskCreate([](void *arg) {
-    for (;;) {
+    delay(100);
+    TaskHandle_t Task2;
 
-      delay(60'000 * 60);
-      Serial.println("Restarting on the hour");
-      BLEDevice::deinit(true);
-      esp_restart();
-    }
-    vTaskDelete(nullptr);
-  }, "Cycle BLE", 16000, nullptr, 1, &Task3);
+    xTaskCreate(outerLoop1, "Main Loop Task", 8000, nullptr, 1, &Task2);
 
+    LOG("Finished Setup!");
+    TaskHandle_t Task3;
+
+    /*xTaskCreate([](void *arg) {
+        for (;;) {
+
+            delay(60'000 * 60);
+            LOG("Restarting on the hour");
+            BLEDevice::deinit(true);
+            esp_restart();
+        }
+    }, "Cycle BLE", 8000, nullptr, 1, &Task3);
+     */
 }
 
+void onWebsocketConnect(const WebsocketConnectionType type, int size, const char *data) {
+    switch (type) {
+        case WebsocketConnectionType::Any: {
+            LOG("Connect type: Any\n");
+            break;
+        }
+        case WebsocketConnectionType::Connected: {
+            LOG("Connect type: Connected\n");
+            break;
+        }
+        case WebsocketConnectionType::Disconnected: {
+            LOG("Connect type: Disconnected\n");
+            break;
+        }
+
+        case WebsocketConnectionType::Closed: {
+            LOG("Connect type: Closed\n");
+            break;
+        }
+        case WebsocketConnectionType::Error: {
+            LOG("Connect type: Error\n");
+            break;
+        }
+        case WebsocketConnectionType::Data: {
+            if (size == 0) {
+                break;
+            }
+
+
+            unique_ptr<BackendToFirmwarePacket> message = make_unique<BackendToFirmwarePacket>();
+            *message = BackendToFirmwarePacket_init_zero;
+            auto stream = make_unique<pb_istream_t>();
+            *stream = pb_istream_from_buffer(reinterpret_cast<const pb_byte_t *>(data), size);
+            bool status = pb_decode(stream.get(), BackendToFirmwarePacket_fields, message.get());
+            if (!status) {
+                throw std::runtime_error("Stream decode bug");
+            }
+            recData(message);
+
+            break;
+        }
+        case WebsocketConnectionType::Max: {
+            throw std::runtime_error("Connect type: Max. What's that?!?!\n");
+        }
+    }
+}
+
+bool hasConnected = false;
+
+// This is the thread responsible for communicating with the backend.
+// By making it a thread, I can control how large of a stack space it gets. I can also pause it
+// until either it needs to ping or it needs to send data
+// It returns the TaskID to which data should be sent
 void clientConnectLoop() {
-  TaskHandle_t Task1;
-  xTaskCreate([](void *parameters) {
-    auto headersMap = std::map<string, string>();
-    headersMap.emplace("Board", uuid.c_str());
-    string url = "/api/v1/hub-connect";
 
-    WebData::WebDataPollingClient dataFromServerClient(url, headersMap);
-    dataFromServerClient.onRecData(recData);
-    for (;;) {
-      LOG("About to poll\n");
-      dataFromServerClient.poll();
-      std::map<basic_string<char>, SensorDataStore> sensorDataCopy;
-      {
-        auto _sensorData = sensorData.lock();
-        sensorDataCopy = *_sensorData;
-      }
-      for (const auto &data : sensorDataCopy) {
-        SendData(data.second.address, data.second);
-      }
-      delay(2000);
-    }
-  }, "Send/rec from server", 32000, (void *) nullptr, 1, &Task1);
+    xTaskCreate([](void *parameters) {
+        ESP_ERROR_CHECK(esp_task_wdt_add(nullptr));
+        string const url = std::string(REMOTE_HOST_WS) + "/api/v1/hub-connect?Board=" + uuid;
 
-  Serial.println("Finished creating connection");
+        for (;;) {
+            ESP_ERROR_CHECK(esp_task_wdt_reset());
+
+            auto ws = websocket::getInstance();
+            if (!ws->isConnected()) {
+                hasConnected = false;
+                ws->connect(url, onWebsocketConnect);
+            } else {
+                hasConnected = true;
+            }
+            if (hasConnected) {
+                delay(100);
+            } else {
+                delay(5'000);
+            }
+        }
+    }, "reconnect websocket", 8000, (void *) nullptr, 1, nullptr);
+
+    xTaskCreate([](void *parameters) {
+        ESP_ERROR_CHECK(esp_task_wdt_add(nullptr));
+        string const url = std::string(REMOTE_HOST_WS) + "/api/v1/hub-connect?Board=" + uuid;
+        for (;;) {
+            LOG("%d\n", __LINE__);
+            ESP_ERROR_CHECK(esp_task_wdt_reset());
+            LOG("%d\n", __LINE__);
+            while (!websocket::getInstance()->isConnected()) {
+                LOG("%d\n", __LINE__);
+                ESP_ERROR_CHECK(esp_task_wdt_reset());
+                delay(100);
+                LOG("%d\n", __LINE__);
+            }
+
+            // Ping doesn't carry internal data
+            FirmwareToBackendPacket packet = {0};
+            LOG("%d\n", __LINE__);
+            packet.which_type = FirmwareToBackendPacket_ping_tag;
+            LOG("%d\n", __LINE__);
+            packet.type.ping = Ping{0};
+            LOG("%d\n", __LINE__);
+            // A ping is 2 bytes [10 0]
+            vector<uint8_t> buf(2);
+            LOG("%d\n", __LINE__);
+            pb_ostream_t output = pb_ostream_from_buffer(buf.data(), buf.size());
+            LOG("%d\n", __LINE__);
+            int status = pb_encode(&output, FirmwareToBackendPacket_fields, &packet);
+            LOG("%d\n", __LINE__);
+            if (!status) {
+                LOG("%d\n", __LINE__);
+                throw std::runtime_error(string("Encoding failed: ") + PB_GET_ERROR(&output));
+            }
+            LOG("%d\n", __LINE__);
+            buf.resize(output.bytes_written);
+            LOG("%d\n", __LINE__);
+            char buff[20];
+            LOG("%d\n", __LINE__);
+            time_t now = time(NULL);
+            LOG("%d\n", __LINE__);
+            strftime(buff, 20, "%Y-%m-%d %H:%M:%S", localtime(&now));
+            LOG("%d\n", __LINE__);
+            LOG("Sending ping: %s\n", buff);
+            WriteSocketError error = websocket::getInstance()->writeBytes(buf, 5'000);
+            LOG("%d\n", __LINE__);
+            LOG("Error:%d\n", error);
+            LOG("%d\n", __LINE__);
+            if (error == WriteSocketError::WriteError && websocket::getInstance()->isConnected()) {
+                LOG("%d\n", __LINE__);
+                throw std::runtime_error("Cannot send data to websocket");
+            }
+            LOG("%d\n", __LINE__);
+            delay(10'000);
+            LOG("%d\n", __LINE__);
+        }
+    }, "Send/rec from server", 8000, (void *) nullptr, 1, nullptr);
 }
 
-bool timeSet = false;
+
 int tryingToConnect = 0;
 bool isConnecting = false;
 
 bool wifiWasConnected = false;
+
 void loop1() {
-  if (WiFi.isConnected()) {
-    if (!wifiWasConnected) {
-      wifiWasConnected = true;
-      Serial.println("WiFi is connected");
-    }
-
-    if (!timeSet) {
-      Serial.println("setting clock");
-      setClock();
-      clientConnectLoop();
-
-      timeSet = true;
-    }
-
-    std::string _registerToken;
-    {
-      _registerToken = registerToken.lockAndSwap("");
-    }
-
-    if (!_registerToken.empty()) {
-      Serial.println("token register");
-
-      std::string url = ("http://detoirhbf2f8n.cloudfront.net/api/v1/register-hub?hub-uuid=");
-      url += (uuid);
-      url = (url + "&addr=");
-      url = url + NimBLEDevice::getAddress().toString();
-      HTTPClient http_client;
-      Serial.printf("url to send: %s\n", url.c_str());
-      String urlToSend = url.c_str();
-      bool begin = http_client.begin(urlToSend);
-      Serial.printf("begin: %d \n", begin);
-      http_client.addHeader("Authorization", _registerToken.c_str());
-      log_d("Free internal heap before TLS %u", ESP.getFreeHeap());
-      log_d("Free PSRAM %u", ESP.getFreePsram());
-      int res = http_client.GET();
-      Serial.printf("res: %d\n", res);
-
-      int httpCode = res;
-      if (httpCode < 0) {
-        Serial.print(" main -  get failed: ");
-        Serial.println(HTTPClient::errorToString(httpCode));
-
-      }
-      http_client.end();
-    }
-
-  } else {
-    if (wifiWasConnected) {
-      wifiWasConnected = false;
-      Serial.println("WiFi is not connected");
-    }
-    Preferences preferences;
-    bool hasKey;
-    {
-      auto lock = mtxReadPrefs.lock();
-      preferences.begin(WIFI_DATA_KEY, true);
-      hasKey = preferences.isKey(WIFI_DATA_KEY_SSID) && preferences.isKey(WIFI_DATA_KEY_PASSWORD);
-      preferences.end();
-    }
-    Serial.printf("has key=%d\n", hasKey);
-
-    if (hasKey) {
-      while (!WiFi.isConnected() && !isConnecting) {
-        preferences.begin(WIFI_DATA_KEY, true);
-        std::string key;
-        std::string pass;
-        {
-          auto lock = mtxReadPrefs.lock();
-          key = preferences.getString(WIFI_DATA_KEY_SSID).c_str();
-          pass = preferences.getString(WIFI_DATA_KEY_PASSWORD).c_str();
-          Serial.printf("%s: secret \n", key.c_str());
-
-          preferences.end();
+    if (WiFi.isConnected()) {
+        if (!wifiWasConnected) {
+            wifiWasConnected = true;
+            LOG("WiFi is connected");
         }
 
-        wl_status_t status = WiFi.status();
-        Serial.printf("status=%d\n", status);
+        if (!timeSet) {
+            LOG("setting clock");
+            setClock();
+            clientConnectLoop();
 
-        WiFi.begin(key.c_str(),
-                   pass.c_str());
-
-        delay(10000);
-        status = WiFi.status();
-        Serial.printf("status=%d\n", status);
-
-        Serial.printf("Trying to connect, key=%s, pass=", key.c_str());
-        if (tryingToConnect == 1000) {
-          Serial.println("Tried too long to connect. Restarting \n\n");
-          esp_restart();
+            timeSet = true;
         }
-        tryingToConnect++;
-      }
-      return;
+    } else {
+        if (wifiWasConnected) {
+            wifiWasConnected = false;
+        }
+        Preferences preferences;
+
+        while (!WiFi.isConnected() && !isConnecting) {
+            std::string key = getSSID();
+            std::string pass = getPassword();
+
+            WiFi.begin(key.c_str(), pass.c_str());
+
+            delay(10'000);
+
+            if (tryingToConnect == 100) {
+                throw std::runtime_error("Tried too long to connect. Restarting \n\n");
+            }
+            tryingToConnect++;
+        }
+        return;
     }
-    Serial.println("Is not connected and cannot connect");
-  }
-
-  delay(100);
-
+    if (getSensorData.has_value()) {
+        LOG("About to loop\n");
+        getSensorData->loop();
+    } else {
+        LOG("getSensorData has no value\n");
+    }
+    delay(100);
 }
 
-void loop() {}
+void loop() {
+}

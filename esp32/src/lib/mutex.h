@@ -49,18 +49,16 @@ class mutex {
  public:
   mutex() = default;
 
-  mutex(T t);
+  explicit mutex(T t);
 
   mutex_guard<T> lock() noexcept;
-  T lockAndSwap(T &&newVal) noexcept;
+  T lockAndSwap(T const &newVal) noexcept;
   void doneWithMutex() noexcept;
   ~mutex() noexcept;
   friend class mutex_guard<T>;
 };
 template<class T>
-mutex<T>::mutex(T t) {
-  val = t;
-}
+mutex<T>::mutex(T t) : val(t){}
 template<class T>
 mutex_guard<T> mutex<T>::lock() noexcept {
   mtx.lock();
@@ -80,12 +78,12 @@ void mutex<T>::doneWithMutex() noexcept {
   mtx.unlock();
 }
 template<class T>
-T mutex<T>::lockAndSwap(T &&newVal) noexcept {
+T mutex<T>::lockAndSwap(T const &newVal) noexcept {
   mtx.lock();
   assert(!isBorrowed);
   isBorrowed = true;
   T oldVal = val;
-  val = std::move(newVal);
+  val = newVal;
   isBorrowed = false;
   mtx.unlock();
   return oldVal;

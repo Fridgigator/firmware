@@ -5,8 +5,8 @@
 #include <deque>
 #include <string>
 #include <esp_bt_device.h>
-
-#include "DeviceType.h"
+#include <optional>
+#include "TypeOfDevice.h"
 #include "NimBLEDevice.h"
 class GetSensorData {
   NimBLEClient *pClient;
@@ -15,7 +15,7 @@ class GetSensorData {
   GetSensorData();
   void loop();
   void clearDevices();
-  void setDevices(std::vector<std::tuple<std::string, DeviceType>> &devices);
+  void setDevices(std::vector<std::tuple<std::string, TypeOfDevice>> &devices);
 };
-extern GetSensorData *getSensorData;
+extern std::optional<GetSensorData> getSensorData;
 #endif //ESP32_SRC_GETSENSORDATA_H_

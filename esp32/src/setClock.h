@@ -5,13 +5,13 @@
 #include <Arduino.h>
 
 void setClock() {
-  configTime(0, 0, "pool.ntp.org");
+  configTime(0, 0, NTP_SERVER);
 
-  Serial.print(F("Waiting for NTP time sync: "));
+  LOG("Waiting for NTP time sync: ");
   time_t nowSecs = time(nullptr);
   while (nowSecs < 8 * 3600 * 2) {
     delay(500);
-    Serial.print(F("."));
+    LOG(".");
     yield();
     nowSecs = time(nullptr);
   }
@@ -19,8 +19,8 @@ void setClock() {
   Serial.println();
   struct tm timeinfo{};
   gmtime_r(&nowSecs, &timeinfo);
-  Serial.print(F("Current time: "));
-  Serial.print(asctime(&timeinfo));
+  LOG("Current time: ");
+  LOG("%s\n",asctime(&timeinfo));
 }
 
 #endif //ESP32_SRC_SETCLOCK_H_

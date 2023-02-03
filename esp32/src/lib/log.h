@@ -3,7 +3,7 @@
 
 #ifdef ARDUINO
 #include <Arduino.h>
-#define LOG(format, args...) Serial.printf(format, ## args)
+#define LOG(format, args...) do {} while(0) //Serial.printf(format, ## args)
 #else
 #define LOG(format,args...) printf(format, ## args);
 #endif
