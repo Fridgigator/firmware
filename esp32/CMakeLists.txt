@@ -1,33 +1,7 @@
-# !!! WARNING !!! AUTO-GENERATED FILE, PLEASE DO NOT MODIFY IT AND USE
-# https://docs.platformio.org/page/projectconf/section_env_build.html#build-flags
-#
-# If you need to override existing CMake configuration or add extra,
-# please create `CMakeListsUser.txt` in the root of project.
-# The `CMakeListsUser.txt` will not be overwritten by PlatformIO.
-
-cmake_minimum_required(VERSION 3.13)
-set(CMAKE_SYSTEM_NAME Generic)
-set(CMAKE_C_COMPILER_WORKS 1)
-set(CMAKE_CXX_COMPILER_WORKS 1)
-
-project("esp32" C CXX)
-
-include(CMakeListsPrivate.txt)
-
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/CMakeListsUser.txt)
-include(CMakeListsUser.txt)
-endif()
-
-add_custom_target(
-    Production ALL
-    COMMAND platformio -c clion run "$<$<NOT:$<CONFIG:All>>:-e${CMAKE_BUILD_TYPE}>"
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-add_custom_target(
-    Debug ALL
-    COMMAND platformio -c clion debug "$<$<NOT:$<CONFIG:All>>:-e${CMAKE_BUILD_TYPE}>"
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-add_executable(Z_DUMMY_TARGET ${SRC_LIST} src/lib/websocket/websocket.cpp src/lib/websocket/websocket.h src/secrets.h)
+# For more information about build system see
+# https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html
+# The following five lines of boilerplate have to be in your project's
+# CMakeLists in this exact order for cmake to work correctly
+cmake_minimum_required(VERSION 3.16)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(esp32)
