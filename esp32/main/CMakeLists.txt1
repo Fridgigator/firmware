@@ -1,0 +1,10 @@
+idf_component_register(SRCS "BLEUtils.cpp" "GetSensorData.cpp" "getTime.cpp" "main.cpp"
+        "exceptions/ConnectionException.cpp" "exceptions/DecodeException.cpp" "exceptions/InterruptedException.cpp"
+        "exceptions/StateException.cpp" "exceptions/WrongPacketException.cpp"
+        "lib/mutex.cpp" "lib/websocket/websocket.cpp" "generated/firmware_backend.pb.c" "generated/packet.pb.c" "esp32.cpp"
+        INCLUDE_DIRS "."
+        REQUIRES
+        nanopb
+        esp-nimble-cpp
+        driver
+        )
