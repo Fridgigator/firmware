@@ -1,0 +1,18 @@
+[package]
+name = "wasm-hub"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cfg-if = "1.0.0"
+cortex-m-rt = "0.7.3"
+embedded-alloc = "0.5.0"
+wasm-bindgen = "0.2.84"
+wee_alloc = {version = "0.4.5", options = "static_array_backend"}
+[profile.release]
+lto = true
+opt-level = 'z'

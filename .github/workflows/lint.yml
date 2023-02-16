@@ -21,11 +21,11 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: fmt
-          args: --manifest-path rust_lib/Cargo.toml  --all -- --check
+          args: --manifest-path esp32/wasm-hub/Cargo.toml  --all -- --check
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --manifest-path rust_lib/Cargo.toml -- -D warnings
+          args: --manifest-path esp32/wasm-hub/Cargo.toml -- -D warnings
   test:
     runs-on: ubuntu-latest
     steps:
@@ -35,4 +35,4 @@ jobs:
       with:
         toolchain: stable
     - name: Test
-      run: cargo test --manifest-path rust_lib/Cargo.toml --all 
+      run: cargo test --manifest-path esp32/wasm-hub/Cargo.toml --all 
