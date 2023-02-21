@@ -1,6 +1,5 @@
 #![feature(never_type)]
 #![cfg_attr(not(test), no_std)]
-
 #![feature(panic_info_message)]
 extern crate core;
 
@@ -25,18 +24,17 @@ const HEAP_SIZE: usize = 1024 * 512;
 #[cfg(not(test))]
 static mut HEAP_START: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
-
 #[cfg(not(test))]
 mod sys;
 
 #[cfg(not(test))]
-use crate::sys::sys_sleep;
+use crate::sys::sys_get;
 #[cfg(not(test))]
 use crate::sys::sys_print;
 #[cfg(not(test))]
-use crate::sys::sys_test_call;
+use crate::sys::sys_sleep;
 #[cfg(not(test))]
-use crate::sys::sys_get;
+use crate::sys::sys_test_call;
 
 fn get(buf: &mut [u8]) -> Result<(), TryFromIntError> {
     unsafe {
@@ -54,14 +52,17 @@ fn sys_sleep(ms: u32) {
 #[cfg(test)]
 fn sys_get_time() -> u64 {
     use std::time::SystemTime;
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[cfg(test)]
 fn sys_print(address: *const u8, size: usize) {
     use std::ffi::c_char;
     for c in 0..size {
-        print!("{}", unsafe { *address.add(c)});
+        print!("{}", unsafe { *address.add(c) });
     }
 }
 
@@ -72,9 +73,7 @@ fn sys_get(address: *const u8, size: u32) {}
 fn sys_test_call() {}
 
 pub fn test_call() {
-    unsafe {
-        sys_test_call()
-    }
+    unsafe { sys_test_call() }
 }
 
 pub fn print(text: &str) {
@@ -82,7 +81,6 @@ pub fn print(text: &str) {
         sys_print(text.as_ptr(), text.bytes().len());
     }
 }
-
 
 #[cfg(not(test))]
 #[global_allocator]
