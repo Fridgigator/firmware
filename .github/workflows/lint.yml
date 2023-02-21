@@ -27,11 +27,11 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --manifest-path esp32/wasm-hub/Cargo.toml -- -D warnings --target wasm32-unknown-unknown
+          args: --manifest-path esp32/wasm-hub/Cargo.toml --target wasm32-unknown-unknown -- -D warnings
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --manifest-path esp32/wasm-hub/Cargo.toml -- -D warnings --release --target wasm32-unknown-unknown
+          args: --manifest-path esp32/wasm-hub/Cargo.toml --release --target wasm32-unknown-unknown -- -D warnings
   test:
     runs-on: ubuntu-latest
     steps:
@@ -42,6 +42,4 @@ jobs:
         toolchain: nightly
         override: true
     - name: Test regular
-      run: cargo test --manifest-path esp32/wasm-hub/Cargo.toml --all  --target wasm32-unknown-unknown
-    - name: Test release
-      run: cargo test --manifest-path esp32/wasm-hub/Cargo.toml --all  --target wasm32-unknown-unknown
+      run: cargo test --manifest-path esp32/wasm-hub/Cargo.toml --all
