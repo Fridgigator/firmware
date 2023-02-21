@@ -19,6 +19,7 @@ jobs:
         with:
           toolchain: nightly
           components: rustfmt, clippy
+          target: wasm32-unknown-unknown
           override: true
       - uses: actions-rs/cargo@v1
         with:
