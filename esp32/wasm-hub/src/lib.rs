@@ -38,7 +38,7 @@ use crate::sys::sys_test_call;
 
 fn get(buf: &mut [u8]) -> Result<(), TryFromIntError> {
     unsafe {
-        sys_get(buf.as_mut_ptr(), buf.len().try_into()?);
+        sys_get(buf.as_mut_ptr(), buf.len());
     }
     Ok(())
 }
@@ -67,7 +67,7 @@ fn sys_print(address: *const u8, size: usize) {
 }
 
 #[cfg(test)]
-fn sys_get(address: *const u8, size: u32) {}
+fn sys_get(address: *const u8, size: usize) {}
 
 #[cfg(test)]
 fn sys_test_call() {}
@@ -121,7 +121,7 @@ fn main() {
 
 #[cfg(not(debug_assertions))]
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
+fn panic(_: &PanicInfo) -> ! {
     print("Panic! ");
     loop {}
 }
