@@ -3,3 +3,5 @@ CMakeListsPrivate.txt
 cmake-build-*/ 
 /src/secrets.h
 .idea
+target
+rt

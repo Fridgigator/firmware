@@ -1,0 +1,8 @@
+extern "C" {
+    pub fn sys_get_ble_data(data: *mut u8, size: usize) -> bool;
+    pub fn sys_sleep(micros: u32);
+    pub fn sys_print(address: *const u8, size: usize);
+    pub fn sys_get(address: *mut u8, size: usize);
+    pub fn sys_test_call();
+    pub fn sys_get_time() -> u64;
+}
