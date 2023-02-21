@@ -1,5 +1,5 @@
 #![feature(never_type)]
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 #![feature(panic_info_message)]
 extern crate core;
@@ -58,9 +58,11 @@ fn sys_get_time() -> u64 {
 }
 
 #[cfg(test)]
-fn sys_print(address: *const u8, size: u32) {
+fn sys_print(address: *const u8, size: usize) {
     use std::ffi::c_char;
-    print!("{}", unsafe { std::ffi::CStr::from_ptr(address as *const c_char).to_str().unwrap() });
+    for c in 0..size {
+        print!("{}", unsafe { *address.add(c)});
+    }
 }
 
 #[cfg(test)]
@@ -126,6 +128,7 @@ fn panic(info: &PanicInfo) -> ! {
     loop {}
 }
 
+#[cfg(not(test))]
 #[cfg(debug_assertions)]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
