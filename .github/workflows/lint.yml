@@ -16,6 +16,11 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+          target: wasm32-unknown-unknown
+          override: true
       - uses: actions-rs/cargo@v1
         with:
           command: fmt
@@ -34,5 +39,8 @@ jobs:
     - uses: actions/checkout@v2
     - uses: actions-rs/cargo@v1
     - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        override: true
     - name: Test regular
       run: cargo test --manifest-path esp32/wasm-hub/Cargo.toml --all
