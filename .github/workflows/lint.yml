@@ -35,6 +35,7 @@ jobs:
     - uses: actions-rs/cargo@v1
     - uses: actions-rs/toolchain@v1
       with:
-        toolchain: stable
+        toolchain: nightly
+        override: true
     - name: Test
       run: cargo test --manifest-path esp32/wasm-hub/Cargo.toml --all 
