@@ -141,11 +141,11 @@ mod test {
             self.get_websocket_data.unwrap()(buf)
         }
 
-        fn get_time(&self) -> u64 {
-            self.get_time.unwrap()()
-        }
         fn send_message(&self, msg: FFIMessage) {
             self.send_message.unwrap()(msg)
+        }
+        fn get_time(&self) -> u64 {
+            self.get_time.unwrap()()
         }
     }
 
