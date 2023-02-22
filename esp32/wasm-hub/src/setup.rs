@@ -17,7 +17,8 @@ pub unsafe fn init_allocator() {
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     use crate::system::ESP32;
-    ESP32::send_message(FFIMessage::PanicErr);
+    let esp32 = ESP32::new();
+    esp32.send_message(FFIMessage::PanicErr);
     loop {}
 }
 
@@ -25,26 +26,27 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     use crate::system::ESP32;
-    ESP32::print("Panic! ");
+    let esp32 = ESP32::new();
+    esp32.print("Panic! ");
 
     if let Some(msg) = info.message() {
         if let Some(msg) = msg.as_str() {
-            ESP32::print(msg);
+            esp32.print(msg);
         }
     }
     if let Some(location) = info.location() {
         use numtoa::NumToA;
-        ESP32::print(" In file ");
-        ESP32::print(location.file());
-        ESP32::print(" : Line ");
+        esp32.print(" In file ");
+        esp32.print(location.file());
+        esp32.print(" : Line ");
         let mut buf = [0u8; 11];
         location.line().numtoa_str(10, &mut buf);
-        ESP32::print(core::str::from_utf8(&buf).unwrap_or("bl"));
-        ESP32::print(":");
+        esp32.print(core::str::from_utf8(&buf).unwrap_or("bl"));
+        esp32.print(":");
         location.column().numtoa_str(10, &mut buf);
-        ESP32::print(core::str::from_utf8(&buf).unwrap_or("bc"));
+        esp32.print(core::str::from_utf8(&buf).unwrap_or("bc"));
     }
-    ESP32::print("\n");
-    ESP32::send_message(FFIMessage::PanicErr);
+    esp32.print("\n");
+    esp32.send_message(FFIMessage::PanicErr);
     loop {}
 }

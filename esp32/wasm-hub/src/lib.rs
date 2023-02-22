@@ -10,7 +10,10 @@ mod system;
 #[cfg(not(test))]
 mod setup;
 
-use core::time::Duration;
+use alloc::vec::Vec;
+use core::time;
+use time::Duration;
+use crate::system::{FFIMessage, Ffi, ReadError};
 
 extern crate alloc;
 
@@ -30,19 +33,33 @@ pub extern "C" fn wasm_main() {
     use crate::system::ESP32;
     // wasm_main is only called when run in wasm mode (as in, not in testing mode). Thus use the "real"
     // extern functions
-    main(ESP32);
+    main(ESP32::new());
 }
 
+
 /// The real function. You must pass an FFI (either ESP32 or a mock FFI)
-fn main<F: Ffi>(_: F) {
+fn main<F: Ffi>(d: F) {
+    // Timer to ack to the server
+    let mut next_timestamp = 0;
     // Message loop
     loop {
+        // Every 60 seconds, send an ack to the server
+        let cur_time = d.get_time();
+        if  cur_time > next_timestamp {
+            // write ack
+            let mut buf = Vec::new();
+
+            protobufs::firmware_to_backend_packet::Type::Ping(protobufs::Ping::default()).encode(&mut buf);
+            // set next time to call
+            next_timestamp = cur_time + 60;
+        }
         // Try to get data from the websocket
         let mut buf = [0u8; 256];
-        match F::get_websocket_data(&mut buf) {
+        match d.get_websocket_data(&mut buf) {
+            // If all of the data fit into the buffer
             Ok(more) => {
                 match get_packet_from_bytes(&buf) {
-                    Ok(val) => F::print(
+                    Ok(val) => d.print(
                         val.r#type
                             .map(|t| match t {
                                 protobufs::backend_to_firmware_packet::Type::Ack(_) => "ack",
@@ -58,16 +75,17 @@ fn main<F: Ffi>(_: F) {
                             })
                             .unwrap_or_default(),
                     ),
-                    Err(_) => F::send_message(FFIMessage::GenericError),
+                    Err(_) => d.send_message(FFIMessage::GenericError),
                 }
-
-                if more && F::sleep(Duration::from_micros(100)).is_err() {
-                    F::send_message(FFIMessage::TryFromIntError);
+                // If there's more data waiting, don't sleep. If there is and Duration::from_micros(100)
+                // is too large to fit into a 128 bit integer, "panic"
+                if more && d.sleep(Duration::from_micros(100)).is_err() {
+                    d.send_message(FFIMessage::TryFromIntError);
                     return;
                 }
             }
             Err(t) => match t {
-                ReadError::OutOfMemory => F::send_message(FFIMessage::TooMuchData),
+                ReadError::OutOfMemory => d.send_message(FFIMessage::TooMuchData),
             },
         }
     }
@@ -77,8 +95,6 @@ fn get_packet_from_bytes(buf: &[u8]) -> Result<protobufs::BackendToFirmwarePacke
     Message::decode(buf)
 }
 
-use crate::system::{FFIMessage, Ffi, ReadError};
-
 pub mod protobufs {
     include!(concat!(env!("OUT_DIR"), "/fridgigator.firmware_backend.rs"));
 }
@@ -86,6 +102,52 @@ pub mod protobufs {
 #[cfg(test)]
 mod test {
     use crate::get_packet_from_bytes;
+    use crate::protobufs::backend_to_firmware_packet::Type;
+    use crate::protobufs::ClearSensorList;
+    use crate::system::{FFIMessage, Ffi, ReadError};
+    use alloc::vec::Vec;
+    use core::num::TryFromIntError;
+    use core::time::Duration;
+    use prost::Message;
+
+    struct Mock {
+        test_call: Option<fn()>,
+        print: Option<fn(&str)>,
+        get: Option<fn(&mut [u8])>,
+        get_websocket_data: Option<fn(&mut [u8]) -> Result<bool, ReadError>>,
+        send_message: Option<fn(FFIMessage)>,
+        sleep: Option<fn(Duration) -> Result<(), TryFromIntError>>,
+        get_time: Option<fn() -> u64>,
+    }
+
+    impl Ffi for Mock {
+        fn test_call(&self) {
+            self.test_call.unwrap()();
+        }
+
+        fn print(&self, text: &str) {
+            self.print.unwrap()(text);
+        }
+
+        fn get(&self, buf: &mut [u8]) {
+            self.get.unwrap()(buf);
+        }
+
+        fn sleep(&self, t: Duration) -> Result<(), TryFromIntError> {
+            self.sleep.unwrap()(t)
+        }
+
+        fn get_websocket_data(&self, buf: &mut [u8]) -> Result<bool, ReadError> {
+            self.get_websocket_data.unwrap()(buf)
+        }
+
+        fn get_time(&self) -> u64 {
+            self.get_time.unwrap()()
+        }
+        fn send_message(&self, msg: FFIMessage) {
+            self.send_message.unwrap()(msg)
+        }
+    }
 
     #[test]
     fn test_protobuf_fail() {
@@ -93,5 +155,52 @@ mod test {
         if result.is_ok() {
             panic!("This shouldn't return a valid result")
         }
+    }
+
+    #[test]
+    fn test_protobuf_succeed() {
+        let mut v = Vec::new();
+        let packet = crate::protobufs::BackendToFirmwarePacket {
+            r#type: Some(Type::ClearSensorList(ClearSensorList::default())),
+        };
+        Message::encode(&packet, &mut v).unwrap();
+        let result = get_packet_from_bytes(&v);
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap().r#type,
+            Some(Type::ClearSensorList(ClearSensorList::default()))
+        );
+    }
+
+    #[test]
+    fn test_protobuf_succeed_val_set_none() {
+        let mut v = Vec::new();
+        let packet = crate::protobufs::BackendToFirmwarePacket { r#type: None };
+        Message::encode(&packet, &mut v).unwrap();
+        let result = get_packet_from_bytes(&v);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().r#type, None);
+    }
+
+    #[test]
+    fn test_websocket_get_data() {
+        let m = Mock {
+            test_call: None,
+            print: None,
+            get: None,
+            get_websocket_data: Some(|mut v| {
+                let packet = crate::protobufs::BackendToFirmwarePacket { r#type: None };
+                Message::encode(&packet, &mut v).unwrap();
+                Ok(false)
+            }),
+            send_message: None,
+            sleep: None,
+            get_time: None
+        };
+        let mut v = Vec::new();
+        assert!(!m.get_websocket_data(&mut v).unwrap());
+        let result = get_packet_from_bytes(&v);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().r#type, None);
     }
 }
