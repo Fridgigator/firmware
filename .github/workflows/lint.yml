@@ -16,7 +16,11 @@ jobs:
     steps:
       - name: Get prereqs
         run: sudo apt-get install protobuf-compiler
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - name: Test
+        run: find .
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
@@ -40,7 +44,11 @@ jobs:
     steps:
     - name: Get prereqs
       run: sudo apt-get install protobuf-compiler
-    - uses: actions/checkout@v2
+    - name: Test
+      run: find .
+    - uses: actions/checkout@v3
+      with:
+        submodules: recursive
     - uses: actions-rs/cargo@v1
     - uses: actions-rs/toolchain@v1
       with:
