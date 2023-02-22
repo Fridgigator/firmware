@@ -2,7 +2,6 @@
 name = "wasm-hub"
 version = "0.1.0"
 edition = "2021"
-panic = "abort"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
@@ -10,8 +9,14 @@ crate-type = ["cdylib"]
 
 [dependencies]
 linked_list_allocator = "0.10.4"
-numtoa = "0.2.4"
+
+numtoa = {version = "0.2.4", default_features = false }
+prost = { version = "0.11.6", default_features = false,features = ["prost-derive"] }
+
+[build-dependencies]
+prost-build = { version = "0.11.6", default_features = false }
 [profile.release]
+debug = false
 panic = "abort"
 strip = "debuginfo"
 lto = true

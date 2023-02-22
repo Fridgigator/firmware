@@ -3,160 +3,95 @@
 #![feature(panic_info_message)]
 extern crate core;
 
-use core::panic::PanicInfo;
+mod system;
+
+/// This module contains functions that are only applicable in wasm mode and cannot be tested using rust's
+/// testing framework.
+#[cfg(not(test))]
+mod setup;
 
 use core::time::Duration;
 
-use core::num::TryFromIntError;
-// We cannot use LockedHeap allocator in unit tests because there's no way to initialize it before use, as
-// its first use is in main.
-#[cfg(not(test))]
-use linked_list_allocator::LockedHeap;
 extern crate alloc;
-use alloc::vec::Vec;
 
-#[cfg(test)]
-const HEAP_SIZE: usize = 1024 * 1024;
-
-#[cfg(not(test))]
-const HEAP_SIZE: usize = 1024 * 512;
-
-#[cfg(not(test))]
-static mut HEAP_START: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-
-#[cfg(not(test))]
-mod sys;
-
-#[cfg(not(test))]
-use crate::sys::sys_get;
-#[cfg(not(test))]
-use crate::sys::sys_print;
-#[cfg(not(test))]
-use crate::sys::sys_sleep;
-#[cfg(not(test))]
-use crate::sys::sys_test_call;
-
-fn get(buf: &mut [u8]) -> Result<(), TryFromIntError> {
-    unsafe {
-        sys_get(buf.as_mut_ptr(), buf.len());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn sys_sleep(ms: u32) {
-    use std::thread;
-    thread::sleep(Duration::from_millis(100 as u64));
-}
-
-#[cfg(test)]
-fn sys_get_time() -> u64 {
-    use std::time::SystemTime;
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
-#[cfg(test)]
-fn sys_print(address: *const u8, size: usize) {
-    use std::ffi::c_char;
-    for c in 0..size {
-        print!("{}", unsafe { *address.add(c) });
-    }
-}
-
-#[cfg(test)]
-fn sys_get(address: *const u8, size: usize) {}
-
-#[cfg(test)]
-fn sys_test_call() {}
-
-pub fn test_call() {
-    unsafe { sys_test_call() }
-}
-
-pub fn print(text: &str) {
-    unsafe {
-        sys_print(text.as_ptr(), text.bytes().len());
-    }
-}
-
-#[cfg(not(test))]
-#[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
+use prost::DecodeError;
+use prost::Message;
 
 /// wasm_main is the entry point to the module. It will not return.
+#[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn wasm_main() {
     // Initialize the allocator BEFORE you use it
-    #[cfg(not(test))]
+
     unsafe {
-        ALLOCATOR.lock().init(HEAP_START.as_mut_ptr(), HEAP_SIZE);
+        setup::init_allocator();
     }
-    main();
+
+    use crate::system::ESP32;
+    // wasm_main is only called when run in wasm mode (as in, not in testing mode). Thus use the "real"
+    // extern functions
+    main(ESP32);
 }
 
-fn sleep(t: Duration) -> Result<(), TryFromIntError> {
-    unsafe {
-        sys_sleep(t.as_micros().try_into()?);
-        Ok(())
-    }
-}
-
-fn main() {
+/// The real function. You must pass an FFI (either ESP32 or a mock FFI)
+fn main<F: Ffi>(_: F) {
+    // Message loop
     loop {
-        print("Ping\n");
-        let _ = sleep(Duration::from_secs(5));
-        let mut buf = Vec::with_capacity(1024);
-        get(&mut buf).unwrap();
-        if let Ok(utf8) = core::str::from_utf8(&buf) {
-            print(utf8);
-            print("\n");
-        } else {
-            print("Unable to print\n");
+        // Try to get data from the websocket
+        let mut buf = [0u8; 256];
+        match F::get_websocket_data(&mut buf) {
+            Ok(more) => {
+                match get_packet_from_bytes(&buf) {
+                    Ok(val) => F::print(
+                        val.r#type
+                            .map(|t| match t {
+                                protobufs::backend_to_firmware_packet::Type::Ack(_) => "ack",
+                                protobufs::backend_to_firmware_packet::Type::AddSensor(_) => {
+                                    "add_sensor"
+                                }
+                                protobufs::backend_to_firmware_packet::Type::ClearSensorList(_) => {
+                                    "clear_sensor_list"
+                                }
+                                protobufs::backend_to_firmware_packet::Type::GetSensorsList(_) => {
+                                    "get_sensor_list"
+                                }
+                            })
+                            .unwrap_or_default(),
+                    ),
+                    Err(_) => F::send_message(FFIMessage::GenericError),
+                }
+
+                if more && F::sleep(Duration::from_micros(100)).is_err() {
+                    F::send_message(FFIMessage::TryFromIntError);
+                    return;
+                }
+            }
+            Err(t) => match t {
+                ReadError::OutOfMemory => F::send_message(FFIMessage::TooMuchData),
+            },
         }
     }
 }
 
-#[cfg(not(debug_assertions))]
-#[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    print("Panic! ");
-    loop {}
+fn get_packet_from_bytes(buf: &[u8]) -> Result<protobufs::BackendToFirmwarePacket, DecodeError> {
+    Message::decode(buf)
 }
 
-#[cfg(not(test))]
-#[cfg(debug_assertions)]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    print("Panic! ");
+use crate::system::{FFIMessage, Ffi, ReadError};
 
-    if let Some(msg) = info.message() {
-        if let Some(msg) = msg.as_str() {
-            print(msg);
-        }
-    }
-    if let Some(location) = info.location() {
-        use numtoa::NumToA;
-        print(" In file ");
-        print(location.file());
-        print(" : Line ");
-        let mut buf = [0u8; 11];
-        location.line().numtoa_str(10, &mut buf);
-        print(core::str::from_utf8(&buf).unwrap_or("bl"));
-        print(":");
-        location.column().numtoa_str(10, &mut buf);
-        print(core::str::from_utf8(&buf).unwrap_or("bc"));
-    }
-    print("\n");
-    loop {}
+pub mod protobufs {
+    include!(concat!(env!("OUT_DIR"), "/fridgigator.firmware_backend.rs"));
 }
 
 #[cfg(test)]
 mod test {
-    use std::time::Duration;
+    use crate::get_packet_from_bytes;
 
     #[test]
-    fn a() {}
+    fn test_protobuf_fail() {
+        let result = get_packet_from_bytes(&[0, 1, 2, 3, 4, 5]);
+        if result.is_ok() {
+            panic!("This shouldn't return a valid result")
+        }
+    }
 }
