@@ -1,5 +1,5 @@
 use crate::system::sys::{
-    sys_get, sys_get_time, sys_get_websocket_data, sys_print, sys_send_message,
+    sys_get, sys_get_time, sys_get_websocket_data, sys_print, sys_send_message, sys_set_led,
     sys_sleep, sys_test_call,
 };
 use core::num::TryFromIntError;
@@ -39,6 +39,8 @@ pub trait Ffi {
     fn send_message(&self, msg: FFIMessage);
 
     fn get_time(&self) -> u64;
+
+    fn set_led(&self, which: u8, state: bool);
 }
 
 /// The ESP32 device is passed when in production or in integration testing
@@ -50,6 +52,7 @@ pub struct ESP32 {
     sys_get: Option<unsafe fn(address: *mut u8, size: usize)>,
     sys_test_call: Option<unsafe fn()>,
     sys_get_time: Option<unsafe fn() -> u64>,
+    sys_set_led: Option<unsafe fn(which: u8, state: bool)>,
 }
 
 impl ESP32 {
@@ -58,13 +61,15 @@ impl ESP32 {
             sys_test_call: Some(|| unsafe { sys_test_call() }),
             sys_print: Some(|msg, size| unsafe { sys_print(msg, size) }),
             sys_get: Some(|addr, size| unsafe { sys_get(addr, size) }),
-            sys_get_websocket_data: Some(|addr, size| unsafe { sys_get_websocket_data(addr, size) }),
+            sys_get_websocket_data: Some(|addr, size| unsafe {
+                sys_get_websocket_data(addr, size)
+            }),
             sys_send_message: Some(|msg| unsafe { sys_send_message(msg) }),
             sys_sleep: Some(|micros| unsafe { sys_sleep(micros) }),
             sys_get_time: Some(|| unsafe { sys_get_time() }),
+            sys_set_led: Some(|state, which| unsafe { sys_set_led(which, state) }),
         }
     }
-
 }
 
 impl Ffi for ESP32 {
@@ -112,16 +117,20 @@ impl Ffi for ESP32 {
     }
 
     fn get_time(&self) -> u64 {
+        unsafe { (self.sys_get_time.unwrap())() }
+    }
+
+    fn set_led(&self, which: u8, state: bool) {
         unsafe {
-            (self.sys_get_time.unwrap())()
+            (self.sys_set_led.unwrap())(which, state);
         }
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::system::{Ffi, ESP32};
     use alloc::vec::Vec;
-    use crate::system::{ESP32, Ffi};
     use std::sync::Mutex;
 
     impl ESP32 {
@@ -134,6 +143,7 @@ mod test {
                 sys_get: None,
                 sys_test_call: None,
                 sys_get_time: None,
+                sys_set_led: None,
             }
         }
     }
@@ -141,9 +151,7 @@ mod test {
     #[test]
     fn test_test_call() {
         *TEST_TEST_CALL_MUTEX.lock().unwrap() = false;
-        let mut e = ESP32::new_without_call(
-
-        );
+        let mut e = ESP32::new_without_call();
         e.sys_test_call = Some(|| {
             let mut l = TEST_TEST_CALL_MUTEX.lock().unwrap();
             *l = true;
@@ -153,12 +161,11 @@ mod test {
     }
     #[test]
     fn test_print() {
-        let mut e = ESP32::new_without_call(        );
+        let mut e = ESP32::new_without_call();
         e.sys_print = Some(|msg, size| {
             let s = "abcABC\n123😀";
             for i in 0..size {
-                assert_eq!(
-                    unsafe {*msg.add(i)}, s.as_bytes()[i]);
+                assert_eq!(unsafe { *msg.add(i) }, s.as_bytes()[i]);
             }
         });
         e.print("abcABC\n123😀");
@@ -167,9 +174,7 @@ mod test {
     #[test]
     fn test_get_websocket_data_works() {
         let mut e = ESP32::new_without_call();
-        e.sys_get_websocket_data = Some(|_, _| {
-            0
-        });
+        e.sys_get_websocket_data = Some(|_, _| 0);
         let mut v = Vec::with_capacity(1024);
         assert!(!e.get_websocket_data(&mut v).unwrap());
     }
@@ -177,9 +182,7 @@ mod test {
     #[test]
     fn test_get_websocket_data_server_has_more_data_points() {
         let mut e = ESP32::new_without_call();
-        e.sys_get_websocket_data = Some(|_, _| {
-            0b1
-        });
+        e.sys_get_websocket_data = Some(|_, _| 0b1);
         let mut v = Vec::with_capacity(1024);
         assert!(e.get_websocket_data(&mut v).unwrap());
     }
@@ -187,9 +190,7 @@ mod test {
     #[test]
     fn test_get_websocket_data_server_data_entry_too_large() {
         let mut e = ESP32::new_without_call();
-        e.sys_get_websocket_data = Some(|_, _| {
-            0b10
-        });
+        e.sys_get_websocket_data = Some(|_, _| 0b10);
         let mut v = Vec::with_capacity(1024);
         assert!(e.get_websocket_data(&mut v).is_err());
     }

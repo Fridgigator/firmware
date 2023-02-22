@@ -10,10 +10,10 @@ mod system;
 #[cfg(not(test))]
 mod setup;
 
+use crate::system::{FFIMessage, Ffi, ReadError};
 use alloc::vec::Vec;
 use core::time;
 use time::Duration;
-use crate::system::{FFIMessage, Ffi, ReadError};
 
 extern crate alloc;
 
@@ -36,30 +36,52 @@ pub extern "C" fn wasm_main() {
     main(ESP32::new());
 }
 
-
 /// The real function. You must pass an FFI (either ESP32 or a mock FFI)
-fn main<F: Ffi>(d: F) {
+fn main<F: Ffi>(esp32: F) {
+    // Flash LEDs on bootup
+    for _ in 0..4 {
+        esp32.set_led(18, true);
+        esp32.set_led(19, true);
+        esp32.set_led(20, true);
+        esp32.set_led(21, true);
+        // I'm passing a constant so it should never error
+        if esp32.sleep(Duration::from_millis(500)).is_err() {
+            esp32.send_message(FFIMessage::TryFromIntError);
+            return;
+        };
+        esp32.set_led(18, false);
+        esp32.set_led(19, false);
+        esp32.set_led(20, false);
+        esp32.set_led(21, false);
+        // I'm passing a constant so it should never error
+        if esp32.sleep(Duration::from_millis(500)).is_err() {
+            esp32.send_message(FFIMessage::TryFromIntError);
+            return;
+        };
+    }
+
     // Timer to ack to the server
     let mut next_timestamp = 0;
     // Message loop
     loop {
         // Every 60 seconds, send an ack to the server
-        let cur_time = d.get_time();
-        if  cur_time > next_timestamp {
+        let cur_time = esp32.get_time();
+        if cur_time > next_timestamp {
             // write ack
             let mut buf = Vec::new();
 
-            protobufs::firmware_to_backend_packet::Type::Ping(protobufs::Ping::default()).encode(&mut buf);
+            protobufs::firmware_to_backend_packet::Type::Ping(protobufs::Ping::default())
+                .encode(&mut buf);
             // set next time to call
             next_timestamp = cur_time + 60;
         }
         // Try to get data from the websocket
         let mut buf = [0u8; 256];
-        match d.get_websocket_data(&mut buf) {
+        match esp32.get_websocket_data(&mut buf) {
             // If all of the data fit into the buffer
             Ok(more) => {
                 match get_packet_from_bytes(&buf) {
-                    Ok(val) => d.print(
+                    Ok(val) => esp32.print(
                         val.r#type
                             .map(|t| match t {
                                 protobufs::backend_to_firmware_packet::Type::Ack(_) => "ack",
@@ -75,17 +97,17 @@ fn main<F: Ffi>(d: F) {
                             })
                             .unwrap_or_default(),
                     ),
-                    Err(_) => d.send_message(FFIMessage::GenericError),
+                    Err(_) => esp32.send_message(FFIMessage::GenericError),
                 }
                 // If there's more data waiting, don't sleep. If there is and Duration::from_micros(100)
                 // is too large to fit into a 128 bit integer, "panic"
-                if more && d.sleep(Duration::from_micros(100)).is_err() {
-                    d.send_message(FFIMessage::TryFromIntError);
+                if more && esp32.sleep(Duration::from_micros(100)).is_err() {
+                    esp32.send_message(FFIMessage::TryFromIntError);
                     return;
                 }
             }
             Err(t) => match t {
-                ReadError::OutOfMemory => d.send_message(FFIMessage::TooMuchData),
+                ReadError::OutOfMemory => esp32.send_message(FFIMessage::TooMuchData),
             },
         }
     }
@@ -118,6 +140,7 @@ mod test {
         send_message: Option<fn(FFIMessage)>,
         sleep: Option<fn(Duration) -> Result<(), TryFromIntError>>,
         get_time: Option<fn() -> u64>,
+        set_led: Option<fn(u8, bool)>,
     }
 
     impl Ffi for Mock {
@@ -146,6 +169,9 @@ mod test {
         }
         fn get_time(&self) -> u64 {
             self.get_time.unwrap()()
+        }
+        fn set_led(&self, which: u8, state: bool) {
+            self.set_led.unwrap()(which, state);
         }
     }
 
@@ -195,7 +221,8 @@ mod test {
             }),
             send_message: None,
             sleep: None,
-            get_time: None
+            get_time: None,
+            set_led: None,
         };
         let mut v = Vec::new();
         assert!(!m.get_websocket_data(&mut v).unwrap());

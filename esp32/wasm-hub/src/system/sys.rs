@@ -6,4 +6,5 @@ extern "C" {
     pub fn sys_get(address: *mut u8, size: usize);
     pub fn sys_test_call();
     pub fn sys_get_time() -> u64;
+    pub fn sys_set_led(state: bool, which: u8);
 }
