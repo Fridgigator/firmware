@@ -3,69 +3,94 @@
 #![feature(panic_info_message)]
 extern crate core;
 
-mod system;
+pub mod system;
 
 /// This module contains functions that are only applicable in wasm mode and cannot be tested using rust's
 /// testing framework.
 #[cfg(not(test))]
-mod setup;
+pub mod setup;
+
+pub mod backend_to_firmware;
 
 use crate::system::{FFIMessage, Ffi, ReadError};
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::time;
 use time::Duration;
 
 extern crate alloc;
 
+use crate::backend_to_firmware::{add_sensors, AddSensorsEnum, Sensor};
 use prost::DecodeError;
 use prost::Message;
 
-/// wasm_main is the entry point to the module. It will not return.
+/// [wasm_main] is the entry point to the module. It will not return.
 #[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn wasm_main() {
     // Initialize the allocator BEFORE you use it
+    use crate::system::ESP32;
 
     unsafe {
         setup::init_allocator();
     }
 
-    use crate::system::ESP32;
     // wasm_main is only called when run in wasm mode (as in, not in testing mode). Thus use the "real"
     // extern functions
-    main(ESP32::new());
+    main(&ESP32::new());
 }
 
-/// The real function. You must pass an FFI (either ESP32 or a mock FFI)
-fn main<F: Ffi>(esp32: F) {
+/// The GPIO controlling the red LED
+const RED_LED: u8 = 23;
+/// The GPIO controlling the white LED
+const WHITE_LED: u8 = 17;
+/// The GPIO controlling the green LED
+const GREEN_LED: u8 = 19;
+/// The GPIO controlling the yellow LED
+const YELLOW_LED: u8 = 18;
+/// Maximum amount of sensors that we can hold
+const MAX_SENSORS: usize = 64;
+
+/// The real function. You must pass an [Ffi] (either ESP32 or a mock FFI)
+fn main<F: Ffi>(esp32: &F) {
     // Flash LEDs on bootup
     for _ in 0..4 {
-        esp32.set_led(18, true);
-        esp32.set_led(19, true);
-        esp32.set_led(20, true);
-        esp32.set_led(21, true);
+        esp32.set_led(RED_LED, true);
+        esp32.set_led(WHITE_LED, true);
+        esp32.set_led(GREEN_LED, true);
+        esp32.set_led(YELLOW_LED, true);
         // I'm passing a constant so it should never error
         if esp32.sleep(Duration::from_millis(500)).is_err() {
             esp32.send_message(FFIMessage::TryFromIntError);
             return;
         };
-        esp32.set_led(18, false);
-        esp32.set_led(19, false);
-        esp32.set_led(20, false);
-        esp32.set_led(21, false);
+        esp32.set_led(RED_LED, false);
+        esp32.set_led(WHITE_LED, false);
+        esp32.set_led(GREEN_LED, false);
+        esp32.set_led(YELLOW_LED, false);
         // I'm passing a constant so it should never error
         if esp32.sleep(Duration::from_millis(500)).is_err() {
             esp32.send_message(FFIMessage::TryFromIntError);
             return;
         };
     }
-
+    // List of sensors
+    let mut sensors_list: VecDeque<Sensor> = VecDeque::with_capacity(MAX_SENSORS);
     // Timer to ack to the server
     let mut next_timestamp = 0;
+    // Timer to stop getting sensors
+    let mut stop_get_sensors: Option<u64> = None;
+
     // Message loop
     loop {
         // Every 60 seconds, send an ack to the server
         let cur_time = esp32.get_time();
+        if let Some(stop_get_sensors_val) = stop_get_sensors {
+            if stop_get_sensors_val > cur_time {
+                // Stop getting sensors
+                stop_get_sensors = None;
+            }
+        }
         if cur_time > next_timestamp {
             // write ack
             let mut buf = Vec::new();
@@ -81,22 +106,35 @@ fn main<F: Ffi>(esp32: F) {
             // If all of the data fit into the buffer
             Ok(more) => {
                 match get_packet_from_bytes(&buf) {
-                    Ok(val) => esp32.print(
-                        val.r#type
-                            .map(|t| match t {
-                                protobufs::backend_to_firmware_packet::Type::Ack(_) => "ack",
-                                protobufs::backend_to_firmware_packet::Type::AddSensor(_) => {
-                                    "add_sensor"
+                    Ok(val) => {
+                        if let Some(t) = val.r#type {
+                            match t {
+                                protobufs::backend_to_firmware_packet::Type::Ack(_) => {}
+                                protobufs::backend_to_firmware_packet::Type::AddSensor(sensors) => {
+                                    if let Err(err) = add_sensors(
+                                        &mut sensors_list,
+                                        esp32,
+                                        &sensors.add_sensor_infos,
+                                    ) {
+                                        match err {
+                                            AddSensorsEnum::TooManySensors => {
+                                                esp32.send_message(FFIMessage::TooManySensors)
+                                            }
+                                            AddSensorsEnum::UnableToConvert => {
+                                                esp32.send_message(FFIMessage::AssertWrongModelType)
+                                            }
+                                        }
+                                    }
                                 }
                                 protobufs::backend_to_firmware_packet::Type::ClearSensorList(_) => {
-                                    "clear_sensor_list"
                                 }
                                 protobufs::backend_to_firmware_packet::Type::GetSensorsList(_) => {
-                                    "get_sensor_list"
+                                    // Stop getting sensors in 15 seconds
+                                    stop_get_sensors = Some(cur_time + 15);
                                 }
-                            })
-                            .unwrap_or_default(),
-                    ),
+                            };
+                        };
+                    }
                     Err(_) => esp32.send_message(FFIMessage::GenericError),
                 }
                 // If there's more data waiting, don't sleep. If there is and Duration::from_micros(100)
@@ -123,20 +161,24 @@ pub mod protobufs {
 
 #[cfg(test)]
 mod test {
+    use crate::backend_to_firmware::{add_sensors, AddSensorsEnum, Sensor};
     use crate::get_packet_from_bytes;
     use crate::protobufs::backend_to_firmware_packet::Type;
-    use crate::protobufs::ClearSensorList;
+    use crate::protobufs::{AddSensorInfo, ClearSensorList, SensorInfo};
     use crate::system::{FFIMessage, Ffi, ReadError};
+    use alloc::collections::VecDeque;
     use alloc::vec::Vec;
     use core::num::TryFromIntError;
     use core::time::Duration;
     use prost::Message;
 
+    type WebsocketDataFunc = fn(&mut [u8]) -> Result<bool, ReadError>;
+
     struct Mock {
         test_call: Option<fn()>,
         print: Option<fn(&str)>,
         get: Option<fn(&mut [u8])>,
-        get_websocket_data: Option<fn(&mut [u8]) -> Result<bool, ReadError>>,
+        get_websocket_data: Option<WebsocketDataFunc>,
         send_message: Option<fn(FFIMessage)>,
         sleep: Option<fn(Duration) -> Result<(), TryFromIntError>>,
         get_time: Option<fn() -> u64>,
@@ -229,5 +271,190 @@ mod test {
         let result = get_packet_from_bytes(&v);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().r#type, None);
+    }
+
+    #[test]
+    fn test_add_sensor_has_room() {
+        let m = Mock {
+            test_call: None,
+            print: None,
+            get: None,
+            get_websocket_data: None,
+            send_message: None,
+            sleep: None,
+            get_time: None,
+            set_led: None,
+        };
+        let mut sensors_list: VecDeque<Sensor> = VecDeque::with_capacity(4);
+        add_sensors(
+            &mut sensors_list,
+            &m,
+            &[
+                AddSensorInfo {
+                    sensor_info: Some(SensorInfo {
+                        name: "Name".into(),
+                        address: "00:11:22:33:44:55:66".into(),
+                    }),
+                    device_type: 1,
+                },
+                AddSensorInfo {
+                    sensor_info: Some(SensorInfo {
+                        name: "Name".into(),
+                        address: "00:11:22:33:44:55:67".into(),
+                    }),
+                    device_type: 1,
+                },
+                AddSensorInfo {
+                    sensor_info: Some(SensorInfo {
+                        name: "Name".into(),
+                        address: "00:11:22:33:44:55:68".into(),
+                    }),
+                    device_type: 1,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(sensors_list.len(), 3)
+    }
+
+    #[test]
+    fn test_add_sensor_has_duplicates_with_same_address_so_has_room() {
+        let m = Mock {
+            test_call: None,
+            print: None,
+            get: None,
+            get_websocket_data: None,
+            send_message: None,
+            sleep: None,
+            get_time: None,
+            set_led: None,
+        };
+        let mut sensors_list: VecDeque<Sensor> = VecDeque::with_capacity(2);
+        add_sensors(
+            &mut sensors_list,
+            &m,
+            &[
+                AddSensorInfo {
+                    sensor_info: Some(SensorInfo {
+                        name: "Name".into(),
+                        address: "00:11:22:33:44:55:66".into(),
+                    }),
+                    device_type: 1,
+                },
+                AddSensorInfo {
+                    sensor_info: Some(SensorInfo {
+                        name: "Name".into(),
+                        address: "00:11:22:33:44:55:67".into(),
+                    }),
+                    device_type: 1,
+                },
+                AddSensorInfo {
+                    sensor_info: Some(SensorInfo {
+                        name: "Name".into(),
+                        address: "00:11:22:33:44:55:66".into(),
+                    }),
+                    device_type: 1,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(sensors_list.len(), 2)
+    }
+
+    use std::sync::Mutex;
+
+    #[test]
+    fn test_add_sensor_out_of_room() {
+        static MUTEX: Mutex<Option<FFIMessage>> = Mutex::new(None);
+
+        let m = Mock {
+            test_call: None,
+            print: None,
+            get: None,
+            get_websocket_data: None,
+            send_message: Some(|msg| {
+                let mut tmp = MUTEX.lock().unwrap();
+                *tmp = Some(msg);
+            }),
+            sleep: None,
+            get_time: None,
+            set_led: None,
+        };
+        let mut sensors_list: VecDeque<Sensor> = VecDeque::with_capacity(1);
+        assert_eq!(
+            add_sensors(
+                &mut sensors_list,
+                &m,
+                &[
+                    AddSensorInfo {
+                        sensor_info: Some(SensorInfo {
+                            name: "Name".into(),
+                            address: "00:11:22:33:44:55:66".into(),
+                        }),
+                        device_type: 1,
+                    },
+                    AddSensorInfo {
+                        sensor_info: Some(SensorInfo {
+                            name: "Name".into(),
+                            address: "00:11:22:33:44:55:67".into(),
+                        }),
+                        device_type: 1,
+                    },
+                    AddSensorInfo {
+                        sensor_info: Some(SensorInfo {
+                            name: "Name".into(),
+                            address: "00:11:22:33:44:55:68".into(),
+                        }),
+                        device_type: 1,
+                    },
+                    AddSensorInfo {
+                        sensor_info: Some(SensorInfo {
+                            name: "Name".into(),
+                            address: "00:11:22:33:44:55:69".into(),
+                        }),
+                        device_type: 1,
+                    },
+                ],
+            ),
+            Err(AddSensorsEnum::TooManySensors)
+        );
+
+        assert_eq!(sensors_list.len(), 1)
+    }
+
+    #[test]
+    fn test_add_sensor_wrong_device_types() {
+        static MUTEX: Mutex<Option<FFIMessage>> = Mutex::new(None);
+
+        let m = Mock {
+            test_call: None,
+            print: None,
+            get: None,
+            get_websocket_data: None,
+            send_message: Some(|msg| {
+                let mut tmp = MUTEX.lock().unwrap();
+                *tmp = Some(msg);
+            }),
+            sleep: None,
+            get_time: None,
+            set_led: None,
+        };
+        let mut sensors_list: VecDeque<Sensor> = VecDeque::with_capacity(1);
+        assert_eq!(
+            add_sensors(
+                &mut sensors_list,
+                &m,
+                &[AddSensorInfo {
+                    sensor_info: Some(SensorInfo {
+                        name: "Name".into(),
+                        address: "00:11:22:33:44:55:66".into(),
+                    }),
+                    device_type: 1000,
+                },],
+            ),
+            Err(AddSensorsEnum::UnableToConvert)
+        );
+
+        assert_eq!(sensors_list.len(), 0)
     }
 }

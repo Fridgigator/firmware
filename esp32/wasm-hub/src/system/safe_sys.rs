@@ -6,11 +6,13 @@ use core::num::TryFromIntError;
 use core::time::Duration;
 
 /// FFIMessage allows passing quick and small messages through the FFI
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FFIMessage {
     TooMuchData,
     GenericError,
     TryFromIntError,
+    TooManySensors,
+    AssertWrongModelType,
     #[allow(dead_code)]
     PanicErr,
 }
@@ -110,6 +112,8 @@ impl Ffi for ESP32 {
             FFIMessage::TooMuchData => 1,
             FFIMessage::TryFromIntError => 2,
             FFIMessage::PanicErr => 3,
+            FFIMessage::TooManySensors => 4,
+            FFIMessage::AssertWrongModelType => 5,
         };
         unsafe {
             (self.sys_send_message.unwrap())(msg);
