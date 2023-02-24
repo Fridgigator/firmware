@@ -18,7 +18,7 @@ use core::time::Duration;
 
 extern crate alloc;
 
-use crate::backend_to_firmware::{add_sensors, AddSensorsEnum, Device};
+use crate::backend_to_firmware::{add_devices, AddSensorsEnum, Device};
 use prost::DecodeError;
 use prost::Message;
 
@@ -134,12 +134,10 @@ fn main<F: Ffi>(esp32: &F) {
                         if let Some(t) = val.r#type {
                             match t {
                                 protobufs::backend_to_firmware_packet::Type::Ack(_) => {}
-                                protobufs::backend_to_firmware_packet::Type::AddSensor(sensors) => {
-                                    if let Err(err) = add_sensors(
-                                        &mut devices_list,
-                                        esp32,
-                                        &sensors.add_sensor_infos,
-                                    ) {
+                                protobufs::backend_to_firmware_packet::Type::Devices(devices) => {
+                                    if let Err(err) =
+                                        add_devices(&mut devices_list, esp32, &devices.devices)
+                                    {
                                         match err {
                                             AddSensorsEnum::TooManySensors => {
                                                 esp32.send_message(FFIMessage::TooManySensors);
@@ -151,9 +149,13 @@ fn main<F: Ffi>(esp32: &F) {
                                         }
                                     }
                                 }
-                                protobufs::backend_to_firmware_packet::Type::ClearSensorList(_) => {
+                                protobufs::backend_to_firmware_packet::Type::StopGetDevicesList(
+                                    _,
+                                ) => {
+                                    esp32.stop_remote_device_scan();
+                                    stop_get_remote_devices = None;
                                 }
-                                protobufs::backend_to_firmware_packet::Type::GetSensorsList(_) => {
+                                protobufs::backend_to_firmware_packet::Type::GetDevicesList(_) => {
                                     // Stop getting sensors in 15 seconds
                                     esp32.start_remote_device_scan();
                                     stop_get_remote_devices = Some(cur_time + 15);
@@ -187,10 +189,11 @@ pub mod protobufs {
 
 #[cfg(test)]
 mod test {
-    use crate::backend_to_firmware::{add_sensors, AddSensorsEnum, Device};
+    use crate::backend_to_firmware::{add_devices, AddSensorsEnum, Device};
     use crate::get_packet_from_bytes;
     use crate::protobufs::backend_to_firmware_packet::Type;
-    use crate::protobufs::{AddSensorInfo, ClearSensorList, SensorInfo};
+    use crate::protobufs::DeviceInfo;
+    use crate::protobufs::StopGetDevicesList;
     use crate::system::{FFIMessage, Ffi, ReadError};
     use alloc::vec::Vec;
     use core::num::TryFromIntError;
@@ -254,14 +257,14 @@ mod test {
     fn test_protobuf_succeed() {
         let mut v = Vec::new();
         let packet = crate::protobufs::BackendToFirmwarePacket {
-            r#type: Some(Type::ClearSensorList(ClearSensorList::default())),
+            r#type: Some(Type::StopGetDevicesList(StopGetDevicesList::default())),
         };
         Message::encode(&packet, &mut v).unwrap();
         let result = get_packet_from_bytes(&v);
         assert!(result.is_ok());
         assert_eq!(
             result.unwrap().r#type,
-            Some(Type::ClearSensorList(ClearSensorList::default()))
+            Some(Type::StopGetDevicesList(StopGetDevicesList::default()))
         );
     }
 
@@ -307,29 +310,25 @@ mod test {
             set_led: None,
         };
         let mut sensors_list: Vec<Device> = Vec::with_capacity(4);
-        add_sensors(
+        add_devices(
             &mut sensors_list,
             &m,
             &[
-                AddSensorInfo {
-                    sensor_info: Some(SensorInfo {
-                        name: "Name".into(),
-                        address: 1,
-                    }),
+                DeviceInfo {
+                    name: "Name".into(),
+                    address: 1,
+
                     device_type: 1,
                 },
-                AddSensorInfo {
-                    sensor_info: Some(SensorInfo {
-                        name: "Name".into(),
-                        address: 2,
-                    }),
+                DeviceInfo {
+                    name: "Name".into(),
+                    address: 2,
+
                     device_type: 1,
                 },
-                AddSensorInfo {
-                    sensor_info: Some(SensorInfo {
-                        name: "Name".into(),
-                        address: 3,
-                    }),
+                DeviceInfo {
+                    name: "Name".into(),
+                    address: 3,
                     device_type: 1,
                 },
             ],
@@ -349,29 +348,26 @@ mod test {
             set_led: None,
         };
         let mut sensors_list: Vec<Device> = Vec::with_capacity(2);
-        add_sensors(
+        add_devices(
             &mut sensors_list,
             &m,
             &[
-                AddSensorInfo {
-                    sensor_info: Some(SensorInfo {
-                        name: "Name".into(),
-                        address: 1,
-                    }),
+                DeviceInfo {
+                    name: "Name".into(),
+                    address: 1,
+
                     device_type: 1,
                 },
-                AddSensorInfo {
-                    sensor_info: Some(SensorInfo {
-                        name: "Name".into(),
-                        address: 2,
-                    }),
+                DeviceInfo {
+                    name: "Name".into(),
+                    address: 2,
+
                     device_type: 1,
                 },
-                AddSensorInfo {
-                    sensor_info: Some(SensorInfo {
-                        name: "Name".into(),
-                        address: 1,
-                    }),
+                DeviceInfo {
+                    name: "Name".into(),
+                    address: 1,
+
                     device_type: 1,
                 },
             ],
@@ -399,36 +395,32 @@ mod test {
         };
         let mut sensors_list: Vec<Device> = Vec::with_capacity(1);
         assert_eq!(
-            add_sensors(
+            add_devices(
                 &mut sensors_list,
                 &m,
                 &[
-                    AddSensorInfo {
-                        sensor_info: Some(SensorInfo {
-                            name: "Name".into(),
-                            address: 6,
-                        }),
+                    DeviceInfo {
+                        name: "Name".into(),
+                        address: 6,
+
                         device_type: 1,
                     },
-                    AddSensorInfo {
-                        sensor_info: Some(SensorInfo {
-                            name: "Name".into(),
-                            address: 7,
-                        }),
+                    DeviceInfo {
+                        name: "Name".into(),
+                        address: 7,
+
                         device_type: 1,
                     },
-                    AddSensorInfo {
-                        sensor_info: Some(SensorInfo {
-                            name: "Name".into(),
-                            address: 8,
-                        }),
+                    DeviceInfo {
+                        name: "Name".into(),
+                        address: 8,
+
                         device_type: 1,
                     },
-                    AddSensorInfo {
-                        sensor_info: Some(SensorInfo {
-                            name: "Name".into(),
-                            address: 9,
-                        }),
+                    DeviceInfo {
+                        name: "Name".into(),
+                        address: 9,
+
                         device_type: 1,
                     },
                 ],
@@ -456,14 +448,13 @@ mod test {
         };
         let mut sensors_list: Vec<Device> = Vec::with_capacity(1);
         assert_eq!(
-            add_sensors(
+            add_devices(
                 &mut sensors_list,
                 &m,
-                &[AddSensorInfo {
-                    sensor_info: Some(SensorInfo {
-                        name: "Name".into(),
-                        address: 6.into(),
-                    }),
+                &[DeviceInfo {
+                    name: "Name".into(),
+                    address: 6.into(),
+
                     device_type: 1000,
                 },],
             ),

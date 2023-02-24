@@ -1,6 +1,5 @@
 use crate::backend_to_firmware::AddSensorsEnum::UnableToConvert;
-
-use crate::protobufs::AddSensorInfo;
+use crate::protobufs::DeviceInfo;
 use crate::system::{FFIMessage, Ffi};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -52,9 +51,9 @@ impl PartialEq for Device {
     }
 }
 
-impl From<&AddSensorInfo> for Option<Device> {
-    fn from(value: &AddSensorInfo) -> Option<Device> {
-        let address_byte_array: [u8; 8] = value.clone().sensor_info?.address.to_le_bytes();
+impl From<&DeviceInfo> for Option<Device> {
+    fn from(value: &DeviceInfo) -> Option<Device> {
+        let address_byte_array: [u8; 8] = value.clone().address.to_le_bytes();
         // Little endien means that the smallest bytes are on the left, so since the ble address can only be 6 bytes long, the last two bytes should be 0
         if address_byte_array[6] != 0 || address_byte_array[7] != 0 {
             None
@@ -68,7 +67,7 @@ impl From<&AddSensorInfo> for Option<Device> {
                     address_byte_array[4],
                     address_byte_array[5],
                 ],
-                name: value.sensor_info.clone()?.name,
+                name: value.clone().name,
                 device_type: DeviceType::try_from(value.device_type).ok()?,
             })
         }
@@ -81,12 +80,12 @@ pub enum AddSensorsEnum {
     UnableToConvert,
 }
 
-pub fn add_sensors<F: Ffi>(
+pub fn add_devices<F: Ffi>(
     sensors_list: &mut Vec<Device>,
     esp32: &F,
-    add_sensor_infos: &[AddSensorInfo],
+    device_infos: &[DeviceInfo],
 ) -> Result<(), AddSensorsEnum> {
-    for s in add_sensor_infos {
+    for s in device_infos {
         let s: Option<Device> = s.into();
         if let Some(s) = s {
             if !sensors_list.contains(&s) {
