@@ -69,9 +69,8 @@ pub fn add_sensors<F: Ffi>(
                 if sensors_list.len() + 1 > sensors_list.capacity() {
                     esp32.send_message(FFIMessage::TooManySensors);
                     return Err(AddSensorsEnum::TooManySensors);
-                } else {
-                    sensors_list.push_back(s);
                 }
+                sensors_list.push_back(s);
             }
         } else {
             return Err(UnableToConvert);

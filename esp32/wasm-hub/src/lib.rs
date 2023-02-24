@@ -24,7 +24,7 @@ use crate::backend_to_firmware::{add_sensors, AddSensorsEnum, Sensor};
 use prost::DecodeError;
 use prost::Message;
 
-/// [wasm_main] is the entry point to the module. It will not return.
+/// This is the entry point to the module. It will not return.
 #[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn wasm_main() {
@@ -83,14 +83,15 @@ fn main<F: Ffi>(esp32: &F) {
 
     // Message loop
     loop {
-        // Every 60 seconds, send an ack to the server
         let cur_time = esp32.get_time();
+        // If we should stop getting sensors
         if let Some(stop_get_sensors_val) = stop_get_sensors {
             if stop_get_sensors_val > cur_time {
                 // Stop getting sensors
                 stop_get_sensors = None;
             }
         }
+        // Every 60 seconds, send an ack to the server
         if cur_time > next_timestamp {
             // write ack
             let mut buf = Vec::new();
@@ -118,10 +119,11 @@ fn main<F: Ffi>(esp32: &F) {
                                     ) {
                                         match err {
                                             AddSensorsEnum::TooManySensors => {
-                                                esp32.send_message(FFIMessage::TooManySensors)
+                                                esp32.send_message(FFIMessage::TooManySensors);
                                             }
                                             AddSensorsEnum::UnableToConvert => {
-                                                esp32.send_message(FFIMessage::AssertWrongModelType)
+                                                esp32
+                                                    .send_message(FFIMessage::AssertWrongModelType);
                                             }
                                         }
                                     }
@@ -175,9 +177,7 @@ mod test {
     type WebsocketDataFunc = fn(&mut [u8]) -> Result<bool, ReadError>;
 
     struct Mock {
-        test_call: Option<fn()>,
         print: Option<fn(&str)>,
-        get: Option<fn(&mut [u8])>,
         get_websocket_data: Option<WebsocketDataFunc>,
         send_message: Option<fn(FFIMessage)>,
         sleep: Option<fn(Duration) -> Result<(), TryFromIntError>>,
@@ -186,16 +186,8 @@ mod test {
     }
 
     impl Ffi for Mock {
-        fn test_call(&self) {
-            self.test_call.unwrap()();
-        }
-
         fn print(&self, text: &str) {
             self.print.unwrap()(text);
-        }
-
-        fn get(&self, buf: &mut [u8]) {
-            self.get.unwrap()(buf);
         }
 
         fn sleep(&self, t: Duration) -> Result<(), TryFromIntError> {
@@ -253,9 +245,7 @@ mod test {
     #[test]
     fn test_websocket_get_data() {
         let m = Mock {
-            test_call: None,
             print: None,
-            get: None,
             get_websocket_data: Some(|mut v| {
                 let packet = crate::protobufs::BackendToFirmwarePacket { r#type: None };
                 Message::encode(&packet, &mut v).unwrap();
@@ -276,9 +266,7 @@ mod test {
     #[test]
     fn test_add_sensor_has_room() {
         let m = Mock {
-            test_call: None,
             print: None,
-            get: None,
             get_websocket_data: None,
             send_message: None,
             sleep: None,
@@ -320,9 +308,7 @@ mod test {
     #[test]
     fn test_add_sensor_has_duplicates_with_same_address_so_has_room() {
         let m = Mock {
-            test_call: None,
             print: None,
-            get: None,
             get_websocket_data: None,
             send_message: None,
             sleep: None,
@@ -368,9 +354,7 @@ mod test {
         static MUTEX: Mutex<Option<FFIMessage>> = Mutex::new(None);
 
         let m = Mock {
-            test_call: None,
             print: None,
-            get: None,
             get_websocket_data: None,
             send_message: Some(|msg| {
                 let mut tmp = MUTEX.lock().unwrap();
@@ -427,9 +411,7 @@ mod test {
         static MUTEX: Mutex<Option<FFIMessage>> = Mutex::new(None);
 
         let m = Mock {
-            test_call: None,
             print: None,
-            get: None,
             get_websocket_data: None,
             send_message: Some(|msg| {
                 let mut tmp = MUTEX.lock().unwrap();

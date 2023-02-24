@@ -9,6 +9,8 @@ static mut HEAP_START: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
+/// # Safety
+/// This should be run exactly once and before any allocation
 pub unsafe fn init_allocator() {
     ALLOCATOR.lock().init(HEAP_START.as_mut_ptr(), HEAP_SIZE);
 }
