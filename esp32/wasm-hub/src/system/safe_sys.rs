@@ -1,7 +1,10 @@
-use crate::system::sys::{
-    sys_get_time, sys_get_websocket_data, sys_print, sys_send_message, sys_set_led,
-    sys_sleep,
+use super::sys::{
+    sys_get_device_from_scan, sys_get_time, sys_get_websocket_data, sys_print, sys_send_message,
+    sys_set_led, sys_sleep, sys_start_remote_device_scan, sys_stop_remote_device_scan,
 };
+use crate::backend_to_firmware::{Device, DeviceType};
+use alloc::string::String;
+use alloc::{string::FromUtf8Error, vec::Vec};
 use core::num::TryFromIntError;
 use core::time::Duration;
 
@@ -15,6 +18,7 @@ pub enum FFIMessage {
     AssertWrongModelType,
     #[allow(dead_code)]
     PanicErr,
+    FromUtf8Error,
 }
 
 /// Signifies the type of reading error coming in from FFI
@@ -41,6 +45,10 @@ pub trait Ffi {
     fn get_time(&self) -> u64;
 
     fn set_led(&self, which: u8, state: bool);
+
+    fn start_remote_device_scan(&self);
+    fn get_remote_device_scan_result(&self) -> Option<Result<Device, FromUtf8Error>>;
+    fn stop_remote_device_scan(&self);
 }
 
 /// The ESP32 device is passed when in production or in integration testing
@@ -102,6 +110,7 @@ impl Ffi for ESP32 {
             FFIMessage::PanicErr => 3,
             FFIMessage::TooManySensors => 4,
             FFIMessage::AssertWrongModelType => 5,
+            FFIMessage::FromUtf8Error => 6,
         };
         unsafe {
             (self.sys_send_message.unwrap())(msg);
@@ -115,6 +124,42 @@ impl Ffi for ESP32 {
     fn set_led(&self, which: u8, state: bool) {
         unsafe {
             (self.sys_set_led.unwrap())(which, state);
+        }
+    }
+
+    fn start_remote_device_scan(&self) {
+        unsafe {
+            sys_start_remote_device_scan();
+        }
+    }
+
+    fn get_remote_device_scan_result(&self) -> Option<Result<Device, FromUtf8Error>> {
+        let mut address = [0; 6];
+        // The max length of a ble device name is 29 chars: https://stackoverflow.com/questions/65568893/how-to-know-the-maximum-length-of-bt-name
+        let mut name_vec = Vec::with_capacity(29);
+        if unsafe {
+            sys_get_device_from_scan(
+                address.as_mut_ptr(),
+                name_vec.as_mut_ptr(),
+                name_vec.capacity(),
+            )
+        } == 0
+        {
+            match String::from_utf8(name_vec) {
+                Ok(string) => {
+                    return Some(Ok(Device::new(address, string, DeviceType::Unknown)));
+                }
+                Err(err) => {
+                    return Some(Err(err));
+                }
+            };
+        }
+        None
+    }
+
+    fn stop_remote_device_scan(&self) {
+        unsafe {
+            sys_stop_remote_device_scan();
         }
     }
 }

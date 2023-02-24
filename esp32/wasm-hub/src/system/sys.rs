@@ -1,4 +1,3 @@
-
 //! This module contains the unsafe function prototypes for the FFI.
 //!
 //! These functions should have a safe implemetations in [crate::system::safe_sys].
@@ -49,9 +48,7 @@ extern "C" {
     /// * `micros`: Time to sleep in microseconds
     ///
     ///
-
     pub fn sys_sleep(micros: u64);
-
 
     /// Print text to the console
     ///
@@ -76,9 +73,7 @@ extern "C" {
     ///
     /// returns: u64, a UNIX timestamp
     ///
-
     pub fn sys_get_time() -> u64;
-
 
     /// Turns on and off a LED attached to a GPIO.
     ///
@@ -89,13 +84,25 @@ extern "C" {
     ///
     pub fn sys_set_led(state: bool, which: u8);
 
-    /// Starts a sensor scan
-    /// 
+    /// Starts a remote device scan
+    ///
     /// Once the scan is started, we should poll the runtime to get scan details
-    pub fn sys_start_sensor_scan();
+    pub fn sys_start_remote_device_scan();
 
-    /// Stops a sensor scan
-    /// 
-    /// This ends the sensor scan
-    pub fn sys_stop_sensor_scan();
+    /// Once inside a remote device scan, poll a device from the runtime
+    ///
+    /// # Arguments
+    ///
+    /// * `address`: The BLE address of the remote device. Must be exactly 6 bytes long. Overwriting or underwriting this will lead to undefined behavior.
+    /// * `name`: The human readable name of the remote device. Overwriting this will lead to undefined behavior.
+    /// * `name_size`: The length allocated to name
+    ///
+    /// Returns 0 if successfully read, 1 if no data available
+    ///
+    pub fn sys_get_device_from_scan(address: *const u8, name: *const u8, name_size: usize) -> u8;
+
+    /// Stops a remote device scan
+    ///
+    /// This ends the remote device scan
+    pub fn sys_stop_remote_device_scan();
 }
