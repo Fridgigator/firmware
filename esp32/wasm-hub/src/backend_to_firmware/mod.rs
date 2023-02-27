@@ -30,13 +30,13 @@ impl TryFrom<i32> for DeviceType {
 
 #[derive(Ord, PartialOrd, Eq, Clone)]
 pub struct Device {
-    pub address: [u8; 6],
+    pub address: [u8; 8],
     pub name: String,
     pub device_type: DeviceType,
 }
 
 impl Device {
-    pub fn new(address: [u8; 6], name: String, t: DeviceType) -> Self {
+    pub fn new(address: [u8; 8], name: String, t: DeviceType) -> Self {
         Self {
             address,
             name,
@@ -59,14 +59,7 @@ impl From<&DeviceInfo> for Option<Device> {
             None
         } else {
             Some(Device {
-                address: [
-                    address_byte_array[0],
-                    address_byte_array[1],
-                    address_byte_array[2],
-                    address_byte_array[3],
-                    address_byte_array[4],
-                    address_byte_array[5],
-                ],
+                address: address_byte_array,
                 name: value.clone().name,
                 device_type: DeviceType::try_from(value.device_type).ok()?,
             })

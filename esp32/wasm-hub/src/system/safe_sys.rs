@@ -1,12 +1,14 @@
 use super::sys::{
     sys_get_device_from_scan, sys_get_time, sys_get_websocket_data, sys_print, sys_send_message,
-    sys_set_led, sys_sleep, sys_start_remote_device_scan, sys_stop_remote_device_scan,
+    sys_set_led, sys_sleep, sys_start_remote_device_scan, sys_stop_remote_device_scan, sys_send_websocket_data,
 };
 use crate::backend_to_firmware::{Device, DeviceType};
+use crate::protobufs::FirmwareToBackendPacket;
 use alloc::string::String;
 use alloc::{string::FromUtf8Error, vec::Vec};
 use core::num::TryFromIntError;
 use core::time::Duration;
+use prost::{EncodeError, Message};
 
 /// Allows passing quick and small messages through the FFI
 #[derive(Debug, Clone)]
@@ -19,6 +21,7 @@ pub enum FFIMessage {
     #[allow(dead_code)]
     PanicErr,
     FromUtf8Error,
+    EncodeError,
 }
 
 /// Signifies the type of reading error coming in from FFI
@@ -49,6 +52,7 @@ pub trait Ffi {
     fn start_remote_device_scan(&self);
     fn get_remote_device_scan_result(&self) -> Option<Result<Device, FromUtf8Error>>;
     fn stop_remote_device_scan(&self);
+    fn send_data(&self, packet: FirmwareToBackendPacket) -> Result<(), EncodeError>;
 }
 
 /// The ESP32 device is passed when in production or in integration testing
@@ -111,6 +115,8 @@ impl Ffi for ESP32 {
             FFIMessage::TooManySensors => 4,
             FFIMessage::AssertWrongModelType => 5,
             FFIMessage::FromUtf8Error => 6,
+            FFIMessage::EncodeError => 7,
+            
         };
         unsafe {
             (self.sys_send_message.unwrap())(msg);
@@ -134,7 +140,7 @@ impl Ffi for ESP32 {
     }
 
     fn get_remote_device_scan_result(&self) -> Option<Result<Device, FromUtf8Error>> {
-        let mut address = [0; 6];
+        let mut address = [0; 8];
         // The max length of a ble device name is 29 chars: https://stackoverflow.com/questions/65568893/how-to-know-the-maximum-length-of-bt-name
         let mut name_vec = Vec::with_capacity(29);
         if unsafe {
@@ -161,6 +167,17 @@ impl Ffi for ESP32 {
         unsafe {
             sys_stop_remote_device_scan();
         }
+    }
+
+    fn send_data(&self, packet: FirmwareToBackendPacket) -> Result<(), EncodeError> {
+        // write ack
+        let mut buf = Vec::new();
+
+        packet.encode(&mut buf)?;
+        unsafe {
+            sys_send_websocket_data(buf.as_ptr(), buf.len());
+        }
+        Ok(())
     }
 }
 

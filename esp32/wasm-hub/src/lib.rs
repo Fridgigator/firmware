@@ -11,9 +11,14 @@ pub mod system;
 pub mod setup;
 
 pub mod backend_to_firmware;
-
+use crate::protobufs::DeviceInfo;
+use crate::protobufs::DeviceType::*;
 use crate::system::{FFIMessage, Ffi, ReadError};
 use alloc::vec::Vec;
+use prost::EncodeError;
+use protobufs::FirmwareToBackendPacket;
+use crate::protobufs::DevicesList;
+use protobufs::firmware_to_backend_packet;
 use core::time::Duration;
 
 extern crate alloc;
@@ -82,6 +87,7 @@ fn main<F: Ffi>(esp32: &F) {
     let mut next_timestamp = 0;
     // Timer to stop getting sensors
     let mut stop_get_remote_devices: Option<u64> = None;
+    // When we search for devices, we hold it here. We need to keep it in RAM to prevent double searching
     let mut remote_devices: Vec<Device> = Vec::new();
     // Message loop
     loop {
@@ -91,8 +97,10 @@ fn main<F: Ffi>(esp32: &F) {
             if stop_get_remote_devices_local > cur_time {
                 // Stop getting sensors
                 esp32.stop_remote_device_scan();
-                remote_devices.clear();
                 stop_get_remote_devices = None;
+                if send_data(esp32,&mut remote_devices).is_err() {
+                    esp32.send_message(FFIMessage::EncodeError);
+                }
             }
         }
         // If looking for sensors, read them at every cycle (if available) and add them to a set that will be sent to the server
@@ -105,8 +113,12 @@ fn main<F: Ffi>(esp32: &F) {
                         if remote_devices.len() < MAX_FOUND_DEVICES {
                             remote_devices.push(scan_result);
                         } else {
+                            // If we found the most devices that we can hold
                             esp32.stop_remote_device_scan();
                             stop_get_remote_devices = None;
+                            if send_data(esp32,&mut remote_devices).is_err() {
+                                esp32.send_message(FFIMessage::EncodeError);
+                            }
                         }
                     }
                 } else {
@@ -116,11 +128,9 @@ fn main<F: Ffi>(esp32: &F) {
         }
         // Every 60 seconds, send an ack to the server
         if cur_time > next_timestamp {
-            // write ack
-            let mut buf = Vec::new();
-
-            protobufs::firmware_to_backend_packet::Type::Ping(protobufs::Ping::default())
-                .encode(&mut buf);
+            if esp32.send_data(FirmwareToBackendPacket { r#type:  None }).is_err() {
+                esp32.send_message(FFIMessage::EncodeError);
+            }
             // set next time to call
             next_timestamp = cur_time + 60;
         }
@@ -133,7 +143,6 @@ fn main<F: Ffi>(esp32: &F) {
                     Ok(val) => {
                         if let Some(t) = val.r#type {
                             match t {
-                                protobufs::backend_to_firmware_packet::Type::Ack(_) => {}
                                 protobufs::backend_to_firmware_packet::Type::Devices(devices) => {
                                     if let Err(err) =
                                         add_devices(&mut devices_list, esp32, &devices.devices)
@@ -154,6 +163,9 @@ fn main<F: Ffi>(esp32: &F) {
                                 ) => {
                                     esp32.stop_remote_device_scan();
                                     stop_get_remote_devices = None;
+                                    if send_data(esp32,&mut remote_devices).is_err() {
+                                        esp32.send_message(FFIMessage::EncodeError);
+                                    }
                                 }
                                 protobufs::backend_to_firmware_packet::Type::GetDevicesList(_) => {
                                     // Stop getting sensors in 15 seconds
@@ -179,6 +191,28 @@ fn main<F: Ffi>(esp32: &F) {
     }
 }
 
+fn send_data<F: Ffi>(esp32: &F, remote_devices: &mut Vec<Device>) -> Result<(), EncodeError> {
+    esp32.send_data(FirmwareToBackendPacket { r#type: Some(firmware_to_backend_packet::Type::DevicesList(
+        DevicesList {
+            devices: remote_devices.iter().map(|x|{
+                DeviceInfo{
+                    address: i64::from_le_bytes(x.address),
+                    name: x.name.clone(),
+                    device_type: match x.device_type {
+                        backend_to_firmware::DeviceType::Unknown => Unspecified.into(),
+                        backend_to_firmware::DeviceType::TI => Ti.into(),
+                        backend_to_firmware::DeviceType::Nordic => Nordic.into(),
+                        backend_to_firmware::DeviceType::Pico => Custom.into(),
+                        backend_to_firmware::DeviceType::Hub => Hub.into(),
+                    }
+                }
+            }).collect()
+        }
+    )) })?;
+    remote_devices.clear();
+    Ok(())
+}
+
 fn get_packet_from_bytes(buf: &[u8]) -> Result<protobufs::BackendToFirmwarePacket, DecodeError> {
     Message::decode(buf)
 }
@@ -192,13 +226,13 @@ mod test {
     use crate::backend_to_firmware::{add_devices, AddSensorsEnum, Device};
     use crate::get_packet_from_bytes;
     use crate::protobufs::backend_to_firmware_packet::Type;
-    use crate::protobufs::DeviceInfo;
+    use crate::protobufs::{DeviceInfo, FirmwareToBackendPacket};
     use crate::protobufs::StopGetDevicesList;
     use crate::system::{FFIMessage, Ffi, ReadError};
     use alloc::vec::Vec;
     use core::num::TryFromIntError;
     use core::time::Duration;
-    use prost::Message;
+    use prost::{Message, EncodeError};
 
     type WebsocketDataFunc = fn(&mut [u8]) -> Result<bool, ReadError>;
 
@@ -209,6 +243,7 @@ mod test {
         sleep: Option<fn(Duration) -> Result<(), TryFromIntError>>,
         get_time: Option<fn() -> u64>,
         set_led: Option<fn(u8, bool)>,
+        send_data: Option<fn (packet: FirmwareToBackendPacket) -> Result<(), EncodeError>>,
     }
 
     impl Ffi for Mock {
@@ -243,6 +278,10 @@ mod test {
         }
 
         fn stop_remote_device_scan(&self) {}
+
+        fn send_data(&self, packet: crate::protobufs::FirmwareToBackendPacket) -> Result<(), prost::EncodeError> {
+        todo!()
+    }
     }
 
     #[test]
@@ -291,6 +330,7 @@ mod test {
             sleep: None,
             get_time: None,
             set_led: None,
+            send_data: None,
         };
         let mut v = Vec::new();
         assert!(!m.get_websocket_data(&mut v).unwrap());
@@ -308,6 +348,7 @@ mod test {
             sleep: None,
             get_time: None,
             set_led: None,
+            send_data: None,
         };
         let mut sensors_list: Vec<Device> = Vec::with_capacity(4);
         add_devices(
@@ -346,6 +387,7 @@ mod test {
             sleep: None,
             get_time: None,
             set_led: None,
+            send_data: None,
         };
         let mut sensors_list: Vec<Device> = Vec::with_capacity(2);
         add_devices(
@@ -391,6 +433,7 @@ mod test {
             }),
             sleep: None,
             get_time: None,
+            send_data: None,
             set_led: None,
         };
         let mut sensors_list: Vec<Device> = Vec::with_capacity(1);
@@ -445,6 +488,7 @@ mod test {
             sleep: None,
             get_time: None,
             set_led: None,
+            send_data: None,
         };
         let mut sensors_list: Vec<Device> = Vec::with_capacity(1);
         assert_eq!(

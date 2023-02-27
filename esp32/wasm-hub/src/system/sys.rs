@@ -40,6 +40,14 @@ extern "C" {
     ///
     pub fn sys_get_websocket_data(data: *mut u8, size: usize) -> u8;
 
+    /// Sends data via a connected websocket
+    /// # Arguments
+    ///
+    /// * `data`: `*const u8`. A pointer from where the runtime should read data
+    /// * `size`: `usize`. How much space does the data take up.
+
+    pub fn sys_send_websocket_data(data: *const u8, size: usize);
+
     /// Puts the thread to sleep for micros microseconds. It will also allow the RTOS to execute other
     /// important threads (like BLE and WiFi)
     ///
