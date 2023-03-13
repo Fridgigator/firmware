@@ -11,12 +11,17 @@ extern "C" {
     /// # Arguments
     ///
     /// * `msg`: One of:
-    ///   * 0: [crate::system::FFIMessage::GenericError]
-    ///   * 1: [crate::system::FFIMessage::TooMuchData]
-    ///   * 2: [crate::system::FFIMessage::TryFromIntError]
-    ///   * 3: [crate::system::FFIMessage::PanicErr]
-    ///   * 4: [crate::system::FFIMessage::TooManySensors]
-    ///   * 5: [crate::system::FFIMessage::AssertWrongModelType]
+    ///   * 0:  [crate::system::FFIMessage::ProtobufDecodeError]
+    ///   * 1:  [crate::system::FFIMessage::TooMuchData]
+    ///   * 2:  [crate::system::FFIMessage::TryFromIntError]
+    ///   * 3:  [crate::system::FFIMessage::PanicErr]
+    ///   * 4:  [crate::system::FFIMessage::TooManyDevices]
+    ///   * 5:  [crate::system::FFIMessage::UnableToConvert]
+    ///   * 6:  [crate::system::FFIMessage::ProtobufEncodeError]
+    ///   * 7:  [crate::system::FFIMessage::AssertExitedFuture]
+    ///   * 8:  [crate::system::FFIMessage::BLENameUTF8Error]
+    ///   * 9:  [crate::system::FFIMessage::TimeOverflow]
+
     ///
     pub fn sys_send_message(msg: i64);
 
@@ -45,7 +50,6 @@ extern "C" {
     ///
     /// * `data`: `*const u8`. A pointer from where the runtime should read data
     /// * `size`: `usize`. How much space does the data take up.
-
     pub fn sys_send_websocket_data(data: *const u8, size: usize);
 
     /// Puts the thread to sleep for micros microseconds. It will also allow the RTOS to execute other

@@ -1,38 +1,63 @@
 #![feature(never_type)]
 #![cfg_attr(not(test), no_std)]
 #![feature(panic_info_message)]
-extern crate core;
+// #![warn(missing_docs)]
 
-pub mod system;
-
-/// This module contains functions that are only applicable in wasm mode and cannot be tested using rust's
-/// testing framework.
-#[cfg(not(test))]
-pub mod setup;
-
-pub mod backend_to_firmware;
-use crate::protobufs::DeviceInfo;
-use crate::protobufs::DeviceType::*;
-use crate::system::{FFIMessage, Ffi, ReadError};
-use alloc::vec::Vec;
-use prost::EncodeError;
-use protobufs::FirmwareToBackendPacket;
-use crate::protobufs::DevicesList;
-use protobufs::firmware_to_backend_packet;
-use core::time::Duration;
+//! The Fridgigator hub business logic.
+//! 
+//! This code should be generic and work on any device that can support WebAssembly. The native code should initialize the wasm runtime and call main.
+//! The rest of the logic sits in main's loop which should periodically yield the CPU.
 
 extern crate alloc;
+extern crate core;
 
-use crate::backend_to_firmware::{add_devices, AddSensorsEnum, Device};
+/// contains the logical types representing the backend <-> firmware interaction
+pub mod backend_to_firmware;
+
+/// contains constants that are used by the program
+pub mod constants;
+
+/// contains the business logic
+pub mod controller;
+
+/// contains internal libraries
+pub mod libs;
+
+/// contains the generated protobuf files
+pub mod protobufs;
+
+#[cfg(not(test))]
+/// This module contains functions that are only applicable in wasm mode and cannot be tested using rust's
+/// testing framework.
+pub mod setup;
+
+/// contains the functions to interact with the runtime and native code
+pub mod system;
+
+use crate::constants::MAX_DEVICES;
+use crate::controller::{ack_server, find_devices, get_websocket_data};
+use crate::system::{FFIMessage, Ffi};
+use cassette::pin_mut;
+use cassette::Cassette;
+use core::sync::atomic::AtomicBool;
+use core::time::Duration;
+use futures::future::join;
+use libs::sleep::Sleep;
+use protobufs::firmware_to_backend_packet;
+use protobufs::FirmwareToBackendPacket;
+use protobufs::Ping;
+
+use crate::backend_to_firmware::{add_devices, Device};
 use prost::DecodeError;
 use prost::Message;
 
+#[cfg(not(test))]
+const ESP32_INIT: crate::system::ESP32 = crate::system::ESP32::new();
 /// This is the entry point to the module. It will not return.
 #[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn wasm_main() {
     // Initialize the allocator BEFORE you use it
-    use crate::system::ESP32;
 
     unsafe {
         setup::init_allocator();
@@ -40,7 +65,7 @@ pub extern "C" fn wasm_main() {
 
     // wasm_main is only called when run in wasm mode (as in, not in testing mode). Thus use the "real"
     // extern functions
-    main(&ESP32::new());
+    main(&ESP32_INIT);
 }
 
 /// The GPIO controlling the red LED
@@ -51,14 +76,12 @@ const WHITE_LED: u8 = 17;
 const GREEN_LED: u8 = 19;
 /// The GPIO controlling the yellow LED
 const YELLOW_LED: u8 = 18;
-/// Maximum amount of devices that we can hold
-const MAX_DEVICES: usize = 64;
 
-/// Maximum amount of found devices that we can hold
-const MAX_FOUND_DEVICES: usize = 64;
+/// This should be true when we should be getting the device list and false otherwise.
+static SHOULD_GET_DEVICE_LIST: AtomicBool = AtomicBool::new(false);
 
 /// The real function. You must pass an [Ffi] (either ESP32 or a mock FFI)
-fn main<F: Ffi>(esp32: &F) {
+fn main<F: Ffi>(esp32: &'static F) {
     // Flash LEDs on bootup
     for _ in 0..4 {
         esp32.set_led(RED_LED, true);
@@ -82,168 +105,95 @@ fn main<F: Ffi>(esp32: &F) {
         esp32.stop_remote_device_scan();
     }
     // List of sensors
-    let mut devices_list: Vec<Device> = Vec::with_capacity(MAX_DEVICES);
-    // Timer to ack to the server
-    let mut next_timestamp = 0;
-    // Timer to stop getting sensors
-    let mut stop_get_remote_devices: Option<u64> = None;
-    // When we search for devices, we hold it here. We need to keep it in RAM to prevent double searching
-    let mut remote_devices: Vec<Device> = Vec::new();
-    // Message loop
+    let mut devices_list: heapless::Vec<Device, MAX_DEVICES> = heapless::Vec::new();
+
+    // Every 60 seconds, send an ack to the server
+    let ack_server_async = async {
+        loop {
+            ack_server(esp32);
+            // sleep for 60 seconds
+            // There's no need to use the result since it's always going to be [Ready::None]
+            let _ = Sleep::new(esp32, Duration::from_secs(60), || (false, ())).await;
+
+        }
+    };
+
+    // Get websocket data
+    let get_websocket_data_async = async {
+        loop {
+            get_websocket_data(esp32, &mut devices_list);
+            // Yield the scheduler for a bit (100ms)
+            // There's no need to use the result since it's always going to be [Ready::None]
+            let _ = Sleep::new(esp32, Duration::from_millis(100), || (false, ())).await;
+
+        }
+    };
+
+    let find_devices_async = async {
+        loop {
+            if let Err(msg) = find_devices(esp32).await {
+                esp32.send_message(msg);
+                panic!("Assertion error");
+            }
+            // We'll wait 5 seconds
+            // There's no need to use the result since it's always going to be [Ready::None]
+            let _ = Sleep::new(esp32, Duration::from_secs(5), || (false, ())).await;
+        }
+    };
+
+    let websocket_data_ack_server = join(
+        join(ack_server_async, get_websocket_data_async),
+        find_devices_async,
+    );
+    pin_mut!(websocket_data_ack_server);
+    let mut cm = Cassette::new(websocket_data_ack_server);
+
+    
     loop {
-        let cur_time = esp32.get_time();
-        // If we should stop getting sensors
-        if let Some(stop_get_remote_devices_local) = stop_get_remote_devices {
-            if stop_get_remote_devices_local > cur_time {
-                // Stop getting sensors
-                esp32.stop_remote_device_scan();
-                stop_get_remote_devices = None;
-                if send_data(esp32,&mut remote_devices).is_err() {
-                    esp32.send_message(FFIMessage::EncodeError);
-                }
-            }
-        }
-        // If looking for sensors, read them at every cycle (if available) and add them to a set that will be sent to the server
-        if stop_get_remote_devices.is_some() {
-            if let Some(scan_result) = esp32.get_remote_device_scan_result() {
-                // The name was a utf8 string
-                if let Ok(scan_result) = scan_result {
-                    // if this device isn't in the remote_devices list yet
-                    if !remote_devices.contains(&scan_result) {
-                        if remote_devices.len() < MAX_FOUND_DEVICES {
-                            remote_devices.push(scan_result);
-                        } else {
-                            // If we found the most devices that we can hold
-                            esp32.stop_remote_device_scan();
-                            stop_get_remote_devices = None;
-                            if send_data(esp32,&mut remote_devices).is_err() {
-                                esp32.send_message(FFIMessage::EncodeError);
-                            }
-                        }
-                    }
-                } else {
-                    esp32.send_message(FFIMessage::FromUtf8Error)
-                }
-            }
-        }
-        // Every 60 seconds, send an ack to the server
-        if cur_time > next_timestamp {
-            if esp32.send_data(FirmwareToBackendPacket { r#type:  None }).is_err() {
-                esp32.send_message(FFIMessage::EncodeError);
-            }
-            // set next time to call
-            next_timestamp = cur_time + 60;
-        }
-        // Try to get data from the websocket
-        let mut buf = [0u8; 256];
-        match esp32.get_websocket_data(&mut buf) {
-            // If all of the data fit into the buffer
-            Ok(more) => {
-                match get_packet_from_bytes(&buf) {
-                    Ok(val) => {
-                        if let Some(t) = val.r#type {
-                            match t {
-                                protobufs::backend_to_firmware_packet::Type::Devices(devices) => {
-                                    if let Err(err) =
-                                        add_devices(&mut devices_list, esp32, &devices.devices)
-                                    {
-                                        match err {
-                                            AddSensorsEnum::TooManySensors => {
-                                                esp32.send_message(FFIMessage::TooManySensors);
-                                            }
-                                            AddSensorsEnum::UnableToConvert => {
-                                                esp32
-                                                    .send_message(FFIMessage::AssertWrongModelType);
-                                            }
-                                        }
-                                    }
-                                }
-                                protobufs::backend_to_firmware_packet::Type::StopGetDevicesList(
-                                    _,
-                                ) => {
-                                    esp32.stop_remote_device_scan();
-                                    stop_get_remote_devices = None;
-                                    if send_data(esp32,&mut remote_devices).is_err() {
-                                        esp32.send_message(FFIMessage::EncodeError);
-                                    }
-                                }
-                                protobufs::backend_to_firmware_packet::Type::GetDevicesList(_) => {
-                                    // Stop getting sensors in 15 seconds
-                                    esp32.start_remote_device_scan();
-                                    stop_get_remote_devices = Some(cur_time + 15);
-                                }
-                            };
-                        };
-                    }
-                    Err(_) => esp32.send_message(FFIMessage::GenericError),
-                }
-                // If there's more data waiting, don't sleep. If there is and Duration::from_micros(100)
-                // is too large to fit into a 128 bit integer, "panic"
-                if more && esp32.sleep(Duration::from_micros(100)).is_err() {
-                    esp32.send_message(FFIMessage::TryFromIntError);
-                    return;
-                }
-            }
-            Err(t) => match t {
-                ReadError::OutOfMemory => esp32.send_message(FFIMessage::TooMuchData),
-            },
+        // Because all of our futures are should never return, this should never return a value.
+        if cm.poll_on().is_some() {
+            esp32.send_message(FFIMessage::AssertExitedFuture);
+            return;
         }
     }
 }
 
-fn send_data<F: Ffi>(esp32: &F, remote_devices: &mut Vec<Device>) -> Result<(), EncodeError> {
-    esp32.send_data(FirmwareToBackendPacket { r#type: Some(firmware_to_backend_packet::Type::DevicesList(
-        DevicesList {
-            devices: remote_devices.iter().map(|x|{
-                DeviceInfo{
-                    address: i64::from_le_bytes(x.address),
-                    name: x.name.clone(),
-                    device_type: match x.device_type {
-                        backend_to_firmware::DeviceType::Unknown => Unspecified.into(),
-                        backend_to_firmware::DeviceType::TI => Ti.into(),
-                        backend_to_firmware::DeviceType::Nordic => Nordic.into(),
-                        backend_to_firmware::DeviceType::Pico => Custom.into(),
-                        backend_to_firmware::DeviceType::Hub => Hub.into(),
-                    }
-                }
-            }).collect()
-        }
-    )) })?;
-    remote_devices.clear();
-    Ok(())
-}
-
+/// This converts a buffer into a packet, if possible
 fn get_packet_from_bytes(buf: &[u8]) -> Result<protobufs::BackendToFirmwarePacket, DecodeError> {
     Message::decode(buf)
 }
 
-pub mod protobufs {
-    include!(concat!(env!("OUT_DIR"), "/fridgigator.firmware_backend.rs"));
-}
 
 #[cfg(test)]
 mod test {
-    use crate::backend_to_firmware::{add_devices, AddSensorsEnum, Device};
+    use crate::backend_to_firmware::{add_devices, AddDeviceError, Device};
+    use crate::constants::MAX_DEVICES;
     use crate::get_packet_from_bytes;
+    use crate::libs::time::Time;
     use crate::protobufs::backend_to_firmware_packet::Type;
-    use crate::protobufs::{DeviceInfo, FirmwareToBackendPacket};
     use crate::protobufs::StopGetDevicesList;
+    use crate::protobufs::{DeviceInfo, FirmwareToBackendPacket};
     use crate::system::{FFIMessage, Ffi, ReadError};
     use alloc::vec::Vec;
     use core::num::TryFromIntError;
     use core::time::Duration;
-    use prost::{Message, EncodeError};
+    use prost::{EncodeError, Message};
 
     type WebsocketDataFunc = fn(&mut [u8]) -> Result<bool, ReadError>;
 
-    struct Mock {
-        print: Option<fn(&str)>,
-        get_websocket_data: Option<WebsocketDataFunc>,
-        send_message: Option<fn(FFIMessage)>,
-        sleep: Option<fn(Duration) -> Result<(), TryFromIntError>>,
-        get_time: Option<fn() -> u64>,
-        set_led: Option<fn(u8, bool)>,
-        send_data: Option<fn (packet: FirmwareToBackendPacket) -> Result<(), EncodeError>>,
+    pub(crate) struct Mock {
+        pub(crate) print: Option<fn(&str)>,
+        pub(crate) get_websocket_data: Option<WebsocketDataFunc>,
+        pub(crate) send_message: Option<fn(FFIMessage)>,
+        pub(crate) sleep: Option<fn(Duration) -> Result<(), TryFromIntError>>,
+        pub(crate) get_time: Option<fn() -> Time>,
+        pub(crate) set_led: Option<fn(u8, bool)>,
+        pub(crate) start_remote_device_scan: Option<fn()>,
+        pub(crate) stop_remote_device_scan: Option<fn()>,
+        pub(crate) send_data:
+            Option<fn(packet: FirmwareToBackendPacket) -> Result<(), EncodeError>>,
+        pub(crate) get_remote_device_scan_result:
+            Option<fn() -> Option<Result<Device, alloc::string::FromUtf8Error>>>,
     }
 
     impl Ffi for Mock {
@@ -262,26 +212,33 @@ mod test {
         fn send_message(&self, msg: FFIMessage) {
             self.send_message.unwrap()(msg)
         }
-        fn get_time(&self) -> u64 {
+        fn get_time(&self) -> Time {
             self.get_time.unwrap()()
         }
         fn set_led(&self, which: u8, state: bool) {
             self.set_led.unwrap()(which, state);
         }
 
-        fn start_remote_device_scan(&self) {}
+        fn start_remote_device_scan(&self) {
+            self.start_remote_device_scan.unwrap()()
+        }
+
+        fn stop_remote_device_scan(&self) {
+            self.stop_remote_device_scan.unwrap()()
+        }
 
         fn get_remote_device_scan_result(
             &self,
         ) -> Option<Result<Device, alloc::string::FromUtf8Error>> {
-            None
+            self.get_remote_device_scan_result.unwrap()()
         }
 
-        fn stop_remote_device_scan(&self) {}
-
-        fn send_data(&self, packet: crate::protobufs::FirmwareToBackendPacket) -> Result<(), prost::EncodeError> {
-        todo!()
-    }
+        fn send_data(
+            &self,
+            packet: crate::protobufs::FirmwareToBackendPacket,
+        ) -> Result<(), prost::EncodeError> {
+            (self.send_data.unwrap())(packet)
+        }
     }
 
     #[test]
@@ -316,7 +273,7 @@ mod test {
         assert!(result.is_ok());
         assert_eq!(result.unwrap().r#type, None);
     }
-
+    static MESSAGE_TO_SEND_GET_DATA: Mutex<Option<FFIMessage>> = Mutex::new(None);
     #[test]
     fn test_websocket_get_data() {
         let m = Mock {
@@ -326,31 +283,43 @@ mod test {
                 Message::encode(&packet, &mut v).unwrap();
                 Ok(false)
             }),
-            send_message: None,
+            send_message: Some(|message| {
+                *MESSAGE_TO_SEND_GET_DATA.lock().unwrap() = Some(message);
+            }),
             sleep: None,
             get_time: None,
             set_led: None,
             send_data: None,
+            start_remote_device_scan: None,
+            stop_remote_device_scan: None,
+            get_remote_device_scan_result: None,
         };
         let mut v = Vec::new();
         assert!(!m.get_websocket_data(&mut v).unwrap());
         let result = get_packet_from_bytes(&v);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().r#type, None);
+        assert_eq!(*MESSAGE_TO_SEND_GET_DATA.lock().unwrap(), None);
     }
+    static MESSAGE_TO_SEND_ADD_SENSOR_HAS_ROOM: Mutex<Option<FFIMessage>> = Mutex::new(None);
 
     #[test]
     fn test_add_sensor_has_room() {
         let m = Mock {
             print: None,
             get_websocket_data: None,
-            send_message: None,
+            send_message: Some(|message| {
+                *MESSAGE_TO_SEND_ADD_SENSOR_HAS_ROOM.lock().unwrap() = Some(message);
+            }),
             sleep: None,
             get_time: None,
             set_led: None,
             send_data: None,
+            start_remote_device_scan: None,
+            stop_remote_device_scan: None,
+            get_remote_device_scan_result: None,
         };
-        let mut sensors_list: Vec<Device> = Vec::with_capacity(4);
+        let mut sensors_list: heapless::Vec<Device, MAX_DEVICES> = heapless::Vec::new();
         add_devices(
             &mut sensors_list,
             &m,
@@ -375,104 +344,11 @@ mod test {
             ],
         )
         .unwrap();
-        assert_eq!(sensors_list.len(), 3)
-    }
-
-    #[test]
-    fn test_add_sensor_has_duplicates_with_same_address_so_has_room() {
-        let m = Mock {
-            print: None,
-            get_websocket_data: None,
-            send_message: None,
-            sleep: None,
-            get_time: None,
-            set_led: None,
-            send_data: None,
-        };
-        let mut sensors_list: Vec<Device> = Vec::with_capacity(2);
-        add_devices(
-            &mut sensors_list,
-            &m,
-            &[
-                DeviceInfo {
-                    name: "Name".into(),
-                    address: 1,
-
-                    device_type: 1,
-                },
-                DeviceInfo {
-                    name: "Name".into(),
-                    address: 2,
-
-                    device_type: 1,
-                },
-                DeviceInfo {
-                    name: "Name".into(),
-                    address: 1,
-
-                    device_type: 1,
-                },
-            ],
-        )
-        .unwrap();
-        assert_eq!(sensors_list.len(), 2)
+        assert_eq!(sensors_list.len(), 3);
+        assert_eq!(*MESSAGE_TO_SEND_ADD_SENSOR_HAS_ROOM.lock().unwrap(), None);
     }
 
     use std::sync::Mutex;
-
-    #[test]
-    fn test_add_sensor_out_of_room() {
-        static MUTEX: Mutex<Option<FFIMessage>> = Mutex::new(None);
-
-        let m = Mock {
-            print: None,
-            get_websocket_data: None,
-            send_message: Some(|msg| {
-                let mut tmp = MUTEX.lock().unwrap();
-                *tmp = Some(msg);
-            }),
-            sleep: None,
-            get_time: None,
-            send_data: None,
-            set_led: None,
-        };
-        let mut sensors_list: Vec<Device> = Vec::with_capacity(1);
-        assert_eq!(
-            add_devices(
-                &mut sensors_list,
-                &m,
-                &[
-                    DeviceInfo {
-                        name: "Name".into(),
-                        address: 6,
-
-                        device_type: 1,
-                    },
-                    DeviceInfo {
-                        name: "Name".into(),
-                        address: 7,
-
-                        device_type: 1,
-                    },
-                    DeviceInfo {
-                        name: "Name".into(),
-                        address: 8,
-
-                        device_type: 1,
-                    },
-                    DeviceInfo {
-                        name: "Name".into(),
-                        address: 9,
-
-                        device_type: 1,
-                    },
-                ],
-            ),
-            Err(AddSensorsEnum::TooManySensors)
-        );
-
-        assert_eq!(sensors_list.len(), 1)
-    }
 
     #[test]
     fn test_add_sensor_wrong_device_types() {
@@ -489,8 +365,11 @@ mod test {
             get_time: None,
             set_led: None,
             send_data: None,
+            start_remote_device_scan: None,
+            stop_remote_device_scan: None,
+            get_remote_device_scan_result: None,
         };
-        let mut sensors_list: Vec<Device> = Vec::with_capacity(1);
+        let mut sensors_list: heapless::Vec<Device, MAX_DEVICES> = heapless::Vec::new();
         assert_eq!(
             add_devices(
                 &mut sensors_list,
@@ -502,7 +381,7 @@ mod test {
                     device_type: 1000,
                 },],
             ),
-            Err(AddSensorsEnum::UnableToConvert)
+            Err(AddDeviceError::UnableToConvert)
         );
 
         assert_eq!(sensors_list.len(), 0)
