@@ -1,9 +1,9 @@
 use super::sys::{
-    sys_get_device_from_scan, sys_get_time, sys_get_websocket_data, sys_print, sys_send_message,
-    sys_send_websocket_data, sys_set_led, sys_sleep, sys_start_remote_device_scan,
-    sys_stop_remote_device_scan,
+    sys_ble_send_packet, sys_connect_devices, sys_get_device_from_scan, sys_get_time,
+    sys_get_websocket_data, sys_print, sys_send_message, sys_send_websocket_data, sys_set_led,
+    sys_sleep, sys_start_remote_device_scan, sys_stop_remote_device_scan,
 };
-use crate::backend_to_firmware::{Device, DeviceType};
+use crate::backend_to_firmware::DeviceInfo;
 use crate::constants::MAX_BLE_SIZE_IN_BYTES;
 use crate::libs::time::Time;
 use crate::protobufs::FirmwareToBackendPacket;
@@ -20,12 +20,12 @@ pub enum FFIMessage {
     TooMuchData,
     /// The Protobuf can't be decoded or encoded
     ProtobufDecodeError,
-    /// Int conversion fails because it's out of bounds 
+    /// Int conversion fails because it's out of bounds
     TryFromIntError,
     /// The server sent us too many sensors
     TooManyDevices,
-    /// Device sent does not fit requirements
-    UnableToConvert,
+    /// Device name is too long
+    NameTooLong,
     #[allow(dead_code)]
     /// There was a panic in our code
     PanicErr,
@@ -37,6 +37,20 @@ pub enum FFIMessage {
     BLENameUTF8Error,
     /// Time is too far in the future to be properly represented
     TimeOverflow,
+    /// Wrong device type
+    WrongDeviceType,
+    /// Cannot connect to a device
+    UsingUnknownDevice,
+    /// An assertion error
+    RegDeviceOutOfRoomError,
+    /// Generic assertion error
+    GenericAssertionError,
+}
+
+impl From<ConnectDeviceError> for FFIMessage {
+    fn from(_: ConnectDeviceError) -> Self {
+        FFIMessage::UsingUnknownDevice
+    }
 }
 
 /// Signifies the type of reading error coming in from FFI
@@ -46,9 +60,15 @@ pub enum ReadError {
     OutOfMemory,
 }
 
+/// Signifies the type of error coming in from trying to connect to a device
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConnectDeviceError {
+    /// Using an unknown device
+    UsingUnknownDevice,
+}
+
 /// The FFI trait allows for Dependency Injection and better testing
 pub trait Ffi {
-
     /// Prints text to the screen or to the uart debug console
     fn print(&self, text: &str);
 
@@ -71,15 +91,25 @@ pub trait Ffi {
 
     /// Starts the device scan (this is used when looking for a new device)
     fn start_remote_device_scan(&self);
-    
+
     /// This is called when we are scanning for results. It will return a device, if found.
-    fn get_remote_device_scan_result(&self) -> Option<Result<Device, FromUtf8Error>>;
+    fn get_remote_device_scan_result(&self) -> Option<Result<DeviceInfo, FromUtf8Error>>;
 
     /// Stop scanning for devices. A device scan can be caused by a timeout, by the user selecting a device or by the user cancelling a scan
     fn stop_remote_device_scan(&self);
 
     /// Send data via websocket to the server
     fn send_data(&self, packet: FirmwareToBackendPacket) -> Result<(), EncodeError>;
+
+    /// Connect to device
+    fn connect_devices(&self, devices: &[u64]);
+
+    /// Send data to another hub via BLE
+    fn ble_send_packet(
+        &self,
+        target: &DeviceInfo,
+        packet: crate::protobufs::FirmwareToFirmwarePacket,
+    ) -> Result<(), EncodeError>;
 }
 
 /// The ESP32 device is passed when in production or in integration testing
@@ -113,18 +143,20 @@ impl ESP32 {
 impl Ffi for ESP32 {
     fn print(&self, text: &str) {
         unsafe {
-            (self.sys_print.unwrap())(text.as_ptr(), text.bytes().len());
+            (self.sys_print.unwrap_unchecked())(text.as_ptr(), text.bytes().len());
         }
     }
     fn sleep(&self, t: Duration) -> Result<(), TryFromIntError> {
         unsafe {
-            (self.sys_sleep.unwrap())(t.as_micros().try_into()?);
+            (self.sys_sleep.unwrap_unchecked())(t.as_micros().try_into()?);
             Ok(())
         }
     }
 
     fn get_websocket_data(&self, buf: &mut [u8]) -> Result<bool, ReadError> {
-        let res = unsafe { (self.sys_get_websocket_data.unwrap())(buf.as_mut_ptr(), buf.len()) };
+        let res = unsafe {
+            (self.sys_get_websocket_data.unwrap_unchecked())(buf.as_mut_ptr(), buf.len())
+        };
         if res & 1 == 1 {
             Ok(true)
         } else if (res >> 1) & 1 == 1 {
@@ -141,25 +173,29 @@ impl Ffi for ESP32 {
             FFIMessage::TryFromIntError => 2,
             FFIMessage::PanicErr => 3,
             FFIMessage::TooManyDevices => 4,
-            FFIMessage::UnableToConvert => 5,
+            FFIMessage::NameTooLong => 5,
             FFIMessage::ProtobufEncodeError => 6,
             FFIMessage::AssertExitedFuture => 7,
             FFIMessage::BLENameUTF8Error => 8,
             FFIMessage::TimeOverflow => 9,
+            FFIMessage::WrongDeviceType => 10,
+            FFIMessage::UsingUnknownDevice => 11,
+            FFIMessage::RegDeviceOutOfRoomError => 12,
+            FFIMessage::GenericAssertionError => 13,
         };
         unsafe {
-            (self.sys_send_message.unwrap())(msg);
+            (self.sys_send_message.unwrap_unchecked())(msg);
         };
     }
 
     fn get_time(&self) -> Time {
-        let time_in_ns_since_utc = unsafe { (self.sys_get_time.unwrap())() };
+        let time_in_ns_since_utc = unsafe { (self.sys_get_time.unwrap_unchecked())() };
         Time::new(Duration::from_nanos(time_in_ns_since_utc))
     }
 
     fn set_led(&self, which: u8, state: bool) {
         unsafe {
-            (self.sys_set_led.unwrap())(which, state);
+            (self.sys_set_led.unwrap_unchecked())(which, state);
         }
     }
 
@@ -169,7 +205,7 @@ impl Ffi for ESP32 {
         }
     }
 
-    fn get_remote_device_scan_result(&self) -> Option<Result<Device, FromUtf8Error>> {
+    fn get_remote_device_scan_result(&self) -> Option<Result<DeviceInfo, FromUtf8Error>> {
         let mut address = [0; 8];
         let mut name_vec = [0u8; MAX_BLE_SIZE_IN_BYTES];
         if unsafe {
@@ -178,10 +214,9 @@ impl Ffi for ESP32 {
         {
             match String::from_utf8(name_vec.to_vec()) {
                 Ok(_) => {
-                    return Some(Ok(Device::new(
+                    return Some(Ok(DeviceInfo::new(
                         address,
                         name_vec.iter().copied().collect(),
-                        DeviceType::Unknown,
                     )));
                 }
                 Err(err) => {
@@ -205,6 +240,27 @@ impl Ffi for ESP32 {
         packet.encode(&mut buf)?;
         unsafe {
             sys_send_websocket_data(buf.as_ptr(), buf.len());
+        }
+        Ok(())
+    }
+
+    fn connect_devices(&self, device_addresses: &[u64]) {
+        unsafe { sys_connect_devices(device_addresses.as_ptr(), device_addresses.len()) };
+    }
+
+    fn ble_send_packet(
+        &self,
+        target: &DeviceInfo,
+        list: crate::protobufs::FirmwareToFirmwarePacket,
+    ) -> Result<(), EncodeError> {
+        let mut buffer = Vec::new();
+        list.encode(&mut buffer)?;
+        unsafe {
+            sys_ble_send_packet(
+                u64::from_le_bytes(target.address),
+                buffer.as_ptr(),
+                buffer.len(),
+            );
         }
         Ok(())
     }

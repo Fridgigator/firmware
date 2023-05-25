@@ -1,11 +1,8 @@
-use core::{time::Duration};
+use core::time::Duration;
 
 use futures::Future;
 
-use crate::{
-    libs::time::Time,
-    system::{ Ffi},
-};
+use crate::{libs::time::Time, system::Ffi};
 
 /// Sleeps for a given amount of time
 pub struct Sleep<F: 'static + Ffi, G> {
@@ -18,9 +15,9 @@ pub struct Sleep<F: 'static + Ffi, G> {
 impl<F: Ffi, G> Sleep<F, G> {
     /// Sleeps for a period of time. It yields control back to the RTOS so that the WDT doesn't complain and so that the OS can
     /// do other tasks.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * esp32: An [Ffi]. This allows for dependency injection and better testing
     /// * dur: How long to sleep
     /// * cancel: If sleep needs to be cancelled by another thread, have the function return true. Otherwise, it should return false.
@@ -33,13 +30,12 @@ impl<F: Ffi, G> Sleep<F, G> {
     }
 }
 
-
 /// [Sleep] can return one of three values
 #[must_use]
 pub enum Return<F> {
     /// Sleep finished normally. It's just time to wake up
     None,
-    /// Sleep was cancelled. There may be a reason for this. 
+    /// Sleep was cancelled. There may be a reason for this.
     Cancelled(F),
 }
 

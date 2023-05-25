@@ -117,4 +117,8 @@ extern "C" {
     ///
     /// This ends the remote device scan
     pub fn sys_stop_remote_device_scan();
+
+    pub fn sys_connect_devices(ids: *const u64, len: usize);
+
+    pub fn sys_ble_send_packet(target: u64, data: *const u8, size_of_data: usize);
 }

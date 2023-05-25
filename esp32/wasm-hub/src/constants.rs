@@ -6,3 +6,5 @@ pub const MAX_DEVICES: usize = 64;
 
 /// Maximum amount of found devices that we can hold
 pub const MAX_FOUND_DEVICES: usize = 64;
+
+pub const MAX_AMNT_SENSORS: usize = 16;
